@@ -2,3 +2,13 @@ vendor
 composer.lock
 .idea
 .vscode
+
+# 调试/运行时日志
+*.log
+err.log
+stderr.log
+menu_trace.log
+
+# 临时文件
+.tmp_*.php
+*.tmp
