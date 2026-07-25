@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Kingbes\Ui\Menu;
 
 use Kingbes\Ui\App;
+use Kingbes\Ui\Graphics\Image;
 
 /**
  * 菜单项。
@@ -13,6 +14,7 @@ use Kingbes\Ui\App;
  * 状态控制：
  *   - setEnabled(bool)   启用/禁用（灰显），委托平台 EnableMenuItem
  *   - setChecked(bool)   勾选/取消勾选，委托平台 CheckMenuItem
+ *   - setImage(Image)    设置位图图标，委托平台 SetMenuItemInfoW
  *
  * 事件：
  *   - onClick  用户点击该菜单项时触发的闭包（分隔符与子菜单入口无 onClick）。
@@ -50,6 +52,16 @@ class MenuItem
      * 子菜单（若此项为子菜单入口）。
      */
     private ?Menu $submenu = null;
+
+    /**
+     * 当前图像的 HBITMAP int 句柄（0 表示无图像）。
+     */
+    private int $hbmInt = 0;
+
+    /**
+     * 持有的 Image 引用（防止 GC 释放 GpImage）。
+     */
+    private ?Image $image = null;
 
     /**
      * 点击回调。签名：fn(): void。
@@ -106,6 +118,45 @@ class MenuItem
         if ($this->id !== 0) {
             App::platform()->menuSetChecked($this->menuHwnd, $this->id, $checked);
         }
+        return $this;
+    }
+
+    /**
+     * 设置菜单项图标。
+     *
+     * 内部流程：
+     *   1. GpImage → HBITMAP（int 句柄）
+     *   2. SetMenuItemInfoW（MIIM_BITMAP）设置 hbmpItem
+     *   3. 持有 Image 引用防止 GC 释放 GpImage
+     *
+     * @param Image $image 图像对象（建议 16x16 或更小图标）。
+     */
+    public function setImage(Image $image): self
+    {
+        if ($this->id === 0) {
+            return $this; // 分隔符无图标
+        }
+
+        $platform = App::platform();
+
+        // 释放旧图像
+        if ($this->hbmInt !== 0) {
+            $platform->deleteGdiObjectInt($this->hbmInt);
+            $this->hbmInt = 0;
+        }
+
+        // GpImage → HBITMAP
+        $this->hbmInt = $platform->gdipImageToHbitmapInt($image->getGpImage());
+        if ($this->hbmInt === 0) {
+            trigger_error('MenuItem::setImage: image conversion failed', \E_USER_WARNING);
+            return $this;
+        }
+
+        // 持有 Image 引用防 GC
+        $this->image = $image;
+
+        // SetMenuItemInfoW 设置 hbmpItem
+        $platform->menuSetItemBitmap($this->menuHwnd, $this->id, $this->hbmInt);
         return $this;
     }
 

@@ -12,14 +12,18 @@ use Kingbes\Ui\Window;
  *
  * 基于 Win32 "msctls_trackbar32" 类（TBS_AUTOTICKS 自动刻度）。
  * 拖动滑块或点击轨道时触发 onChanged 回调（WM_HSCROLL）。
+ * 拖动结束/点击释放后触发 onReleased 回调（SB_ENDSCROLL）。
  */
 class Slider extends Control
 {
     private const TBS_AUTOTICKS = 0x0001;
     private const WS_TABSTOP     = 0x00010000;
 
-    /** 值变化回调（无参数）。 */
+    /** 值变化回调（无参数）。拖动过程或键盘方向键触发。 */
     public ?\Closure $onChanged = null;
+
+    /** 拖动/操作结束回调（无参数）。WM_HSCROLL 的 SB_ENDSCROLL 通知触发。 */
+    public ?\Closure $onReleased = null;
 
     /**
      * @param Control|Window $parent 父容器或窗口。

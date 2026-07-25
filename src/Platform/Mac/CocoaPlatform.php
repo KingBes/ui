@@ -634,6 +634,61 @@ C;
     }
 
     // ============================================================
+    // Tab 标签页方法（未实现）
+    // ============================================================
+
+    public function tabInsertItem(int $tabHwnd, int $index, string $text): void
+    {
+        throw UnsupportedOperationException::forMethod(__METHOD__, 'macOS');
+    }
+
+    public function tabDeleteItem(int $tabHwnd, int $index): void
+    {
+        throw UnsupportedOperationException::forMethod(__METHOD__, 'macOS');
+    }
+
+    public function tabGetSelected(int $tabHwnd): int
+    {
+        throw UnsupportedOperationException::forMethod(__METHOD__, 'macOS');
+    }
+
+    public function tabSetSelected(int $tabHwnd, int $index): void
+    {
+        throw UnsupportedOperationException::forMethod(__METHOD__, 'macOS');
+    }
+
+    public function tabGetItemCount(int $tabHwnd): int
+    {
+        throw UnsupportedOperationException::forMethod(__METHOD__, 'macOS');
+    }
+
+    // ============================================================
+    // DateTimePicker 方法（未实现）
+    // ============================================================
+
+    public function dateTimePickerGetTime(int $hwnd): ?array
+    {
+        throw UnsupportedOperationException::forMethod(__METHOD__, 'macOS');
+    }
+
+    public function dateTimePickerSetTime(
+        int $hwnd,
+        int $year,
+        int $month,
+        int $day,
+        int $hour,
+        int $minute,
+        int $second
+    ): void {
+        throw UnsupportedOperationException::forMethod(__METHOD__, 'macOS');
+    }
+
+    public function dateTimePickerSetFormat(int $hwnd, string $format): void
+    {
+        throw UnsupportedOperationException::forMethod(__METHOD__, 'macOS');
+    }
+
+    // ============================================================
     // 菜单方法（未实现）
     // ============================================================
 

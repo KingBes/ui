@@ -35,6 +35,12 @@ class Window
      */
     private ?Menu $menu = null;
 
+    /**
+     * 客户区内边距（像素）。布局时顶层容器会被放置在
+     * (margin, margin, w-2*margin, h-2*margin) 矩形内。
+     */
+    private int $margined = 0;
+
     // ============================================================
     // 事件闭包属性
     // ============================================================
@@ -45,6 +51,8 @@ class Window
     public ?\Closure $onResize = null;
     /** 焦点变化回调。参数：bool $focused。 */
     public ?\Closure $onFocus = null;
+    /** 位置变化回调。参数：Point（窗口左上角屏幕坐标）。 */
+    public ?\Closure $onPositionChanged = null;
 
     /**
      * 创建顶层窗口。
@@ -159,6 +167,46 @@ class Window
         App::platform()->windowSetTopmost($this->hwnd, $topmost);
     }
 
+    /**
+     * 从 .ico 文件设置窗口图标。
+     *
+     * 同时设置大图标（Alt+Tab 显示）和小图标（任务栏/标题栏）。
+     *
+     * @param string $file .ico 文件路径。
+     */
+    public function setIconFromFile(string $file): self
+    {
+        App::platform()->windowSetIconFromFile($this->hwnd, $file);
+        return $this;
+    }
+
+    /**
+     * 设置窗口图标为预定义系统图标。
+     *
+     * @param int $iconId IDI_APPLICATION / IDI_HAND / IDI_QUESTION / IDI_EXCLAMATION / IDI_ASTERISK。
+     *                    可使用 TrayIcon::IDI_* 常量。
+     */
+    public function setIconFromId(int $iconId): self
+    {
+        App::platform()->windowSetIconFromId($this->hwnd, $iconId);
+        return $this;
+    }
+
+    /**
+     * 从 Image 对象设置窗口图标（PNG/JPEG/BMP/GIF/TIFF 任意 GDI+ 格式）。
+     *
+     * 内部通过 GDI+ GdipCreateHICONFromBitmap 转换为 HICON，
+     * 然后用 WM_SETICON 同时设置 ICON_BIG 和 ICON_SMALL。
+     * 析构时由窗口自动 DestroyIcon 释放。
+     *
+     * @param \Kingbes\Ui\Graphics\Image $image 图像对象。
+     */
+    public function setIconFromImage(\Kingbes\Ui\Graphics\Image $image): self
+    {
+        App::platform()->windowSetIconFromImage($this->hwnd, $image);
+        return $this;
+    }
+
     public function isFocused(): bool
     {
         return App::platform()->windowIsFocused($this->hwnd);
@@ -193,6 +241,29 @@ class Window
     {
         App::platform()->windowSetScrollable($this->hwnd, $contentHeight);
         return $this;
+    }
+
+    /**
+     * 设置客户区内边距（像素）。
+     *
+     * 设置后顶层布局容器会被放置在 (margin, margin, w-2*margin, h-2*margin)
+     * 矩形内，使子控件与窗口边框保持视觉间距。立即触发重布局。
+     *
+     * @param int $pixels 边距像素数，<0 视为 0。
+     */
+    public function setMargined(int $pixels): self
+    {
+        $this->margined = max(0, $pixels);
+        App::platform()->triggerRelayout($this->hwnd);
+        return $this;
+    }
+
+    /**
+     * 获取客户区内边距（像素）。
+     */
+    public function getMargined(): int
+    {
+        return $this->margined;
     }
 
     /**

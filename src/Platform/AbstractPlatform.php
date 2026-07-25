@@ -397,13 +397,18 @@ abstract class AbstractPlatform implements PlatformInterface
             return;
         }
         $size = $this->windowGetClientSize($hwnd);
+        // 窗口内边距（Window::getMargined）。若窗口未提供该方法则视为 0。
+        $margin = method_exists($window, 'getMargined') ? (int) $window->getMargined() : 0;
+        $margin = max(0, $margin);
+        $innerW = max(0, $size->width - 2 * $margin);
+        $innerH = max(0, $size->height - 2 * $margin);
         // 先设置顶层 Container 自身的位置和尺寸到 Window 客户区。
         // controlCreate 创建 Container 时初始尺寸为 0x0，若不显式设置，
         // 子控件会被 0x0 客户区裁剪导致窗口空白。
         $containerHwnd = $container->getHwnd();
         if ($containerHwnd !== 0) {
-            $this->controlSetBounds($containerHwnd, 0, 0, $size->width, $size->height);
+            $this->controlSetBounds($containerHwnd, $margin, $margin, $innerW, $innerH);
         }
-        $container->layout(0, 0, $size->width, $size->height);
+        $container->layout(0, 0, $innerW, $innerH);
     }
 }

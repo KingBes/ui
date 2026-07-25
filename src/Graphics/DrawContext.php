@@ -107,6 +107,26 @@ final class DrawContext
     private Color $textColor;
 
     /**
+     * 当前 GDI+ 画笔（用于 stroke 操作）。null 表示按需创建。
+     */
+    private ?\FFI\CData $gdiPen = null;
+
+    /**
+     * 当前画笔颜色（用于按需创建 GDI+ Pen）。
+     */
+    private Color $penColor;
+
+    /**
+     * 当前画笔宽度。
+     */
+    private float $penWidth = 1.0;
+
+    /**
+     * 当前渐变画笔（null 表示使用纯色画刷）。
+     */
+    private ?GradientBrush $gradientBrush = null;
+
+    /**
      * 释放标志（防止 free() 重复执行）。
      */
     private bool $freed = false;
@@ -120,6 +140,16 @@ final class DrawContext
      * DirectWrite 初始化结果缓存（避免每次 drawText 都重新尝试）。
      */
     private static ?bool $dwTried = null;
+
+    /**
+     * 获取 GDI+ Graphics CData（gdiplus 作用域）。
+     *
+     * 仅供 WindowsPlatform 内部使用（如 Area 滚动时应用世界坐标变换）。
+     */
+    public function getGraphics(): \FFI\CData
+    {
+        return $this->graphics;
+    }
 
     /**
      * 内部构造，由 WindowsPlatform::drawContextCreate 创建。
@@ -136,6 +166,7 @@ final class DrawContext
         $this->hwnd = $hwnd;
         $this->hdcInt = $hdcInt;
         $this->textColor = Color::black();
+        $this->penColor = Color::black();
 
         // gdi32 作用域 HDC
         $this->hdcGdi = $platform->intToPtrIn($platform->getGdi32(), $hdcInt);
@@ -160,7 +191,8 @@ final class DrawContext
     /**
      * 设置画笔（线条颜色/宽度）。
      *
-     * PS_SOLID=0。旧画笔压栈以便析构恢复。
+     * 同时创建 GDI 画笔（drawLine/drawRect 等）和 GDI+ 画笔（strokePath 等）。
+     * PS_SOLID=0。旧 GDI 画笔压栈以便析构恢复。
      */
     public function setPen(Color $color, int $width = 1): void
     {
@@ -169,6 +201,11 @@ final class DrawContext
         $old = $gdi->SelectObject($this->hdcGdi, $pen);
         $this->gdiObjects[] = $pen;
         $this->oldObjects[] = $old;
+
+        // 同步 GDI+ 画笔
+        $this->penColor = $color;
+        $this->penWidth = (float) max(1, $width);
+        $this->ensureGdiPen();
     }
 
     /**
@@ -486,6 +523,370 @@ final class DrawContext
     }
 
     // ============================================================
+    // 路径系统（#8）/ fill-stroke 分离（#9）/ 曲线圆弧（#11 #12）
+    // ============================================================
+
+    /**
+     * 创建路径对象。
+     *
+     * @param int $fillMode 填充规则（DrawPath::FILL_ALTERNATE / FILL_WINDING）。
+     */
+    public function createPath(int $fillMode = DrawPath::FILL_ALTERNATE): DrawPath
+    {
+        return new DrawPath($this->platform, $fillMode);
+    }
+
+    /**
+     * 创建线性渐变画笔。
+     *
+     * @param float $x1     起点 x。
+     * @param float $y1     起点 y。
+     * @param float $x2     终点 x。
+     * @param float $y2     终点 y。
+     * @param Color $color1 起点颜色。
+     * @param Color $color2 终点颜色。
+     */
+    public function createGradientBrush(
+        float $x1, float $y1,
+        float $x2, float $y2,
+        Color $color1, Color $color2
+    ): GradientBrush {
+        return new GradientBrush($this->platform, $x1, $y1, $x2, $y2, $color1, $color2);
+    }
+
+    /**
+     * 填充矩形（仅填充，无边框）。
+     *
+     * 使用当前画刷（setColor 设置的纯色画刷或 setGradientBrush 设置的渐变画刷）。
+     */
+    public function fillRect(int $x, int $y, int $w, int $h): void
+    {
+        $this->ensureFillBrush();
+        $this->platform->getGdiplus()->GdipFillRectangle(
+            $this->graphics, $this->getActiveFillBrush(),
+            (float) $x, (float) $y, (float) $w, (float) $h
+        );
+    }
+
+    /**
+     * 描边矩形（仅边框，不填充）。
+     *
+     * 使用当前画笔（setPen 设置）。
+     */
+    public function strokeRect(int $x, int $y, int $w, int $h): void
+    {
+        $this->ensureGdiPen();
+        $this->platform->getGdiplus()->GdipDrawRectangle(
+            $this->graphics, $this->gdiPen,
+            (float) $x, (float) $y, (float) $w, (float) $h
+        );
+    }
+
+    /**
+     * 填充椭圆（仅填充，无边框）。
+     */
+    public function fillEllipse(int $x, int $y, int $w, int $h): void
+    {
+        $this->ensureFillBrush();
+        $this->platform->getGdiplus()->GdipFillEllipse(
+            $this->graphics, $this->getActiveFillBrush(),
+            (float) $x, (float) $y, (float) $w, (float) $h
+        );
+    }
+
+    /**
+     * 描边椭圆（仅边框，不填充）。
+     */
+    public function strokeEllipse(int $x, int $y, int $w, int $h): void
+    {
+        $this->ensureGdiPen();
+        $this->platform->getGdiplus()->GdipDrawEllipse(
+            $this->graphics, $this->gdiPen,
+            (float) $x, (float) $y, (float) $w, (float) $h
+        );
+    }
+
+    /**
+     * 填充路径。
+     *
+     * 使用当前画刷填充闭合路径区域。
+     *
+     * @param DrawPath $path 路径对象。
+     */
+    public function fillPath(DrawPath $path): void
+    {
+        $this->ensureFillBrush();
+        $this->platform->getGdiplus()->GdipFillPath(
+            $this->graphics, $this->getActiveFillBrush(), $path->getGpPath()
+        );
+    }
+
+    /**
+     * 描边路径。
+     *
+     * 使用当前画笔沿路径绘制线条。
+     *
+     * @param DrawPath $path 路径对象。
+     */
+    public function strokePath(DrawPath $path): void
+    {
+        $this->ensureGdiPen();
+        $this->platform->getGdiplus()->GdipDrawPath(
+            $this->graphics, $this->gdiPen, $path->getGpPath()
+        );
+    }
+
+    /**
+     * 绘制三次贝塞尔曲线。
+     *
+     * @param int $x1 起点 x。  @param int $y1 起点 y。
+     * @param int $x2 控制点1 x。 @param int $y2 控制点1 y。
+     * @param int $x3 控制点2 x。 @param int $y3 控制点2 y。
+     * @param int $x4 终点 x。  @param int $y4 终点 y。
+     */
+    public function drawBezier(
+        int $x1, int $y1, int $x2, int $y2, int $x3, int $y3, int $x4, int $y4
+    ): void {
+        $this->ensureGdiPen();
+        $this->platform->getGdiplus()->GdipDrawBezier(
+            $this->graphics, $this->gdiPen,
+            (float) $x1, (float) $y1, (float) $x2, (float) $y2,
+            (float) $x3, (float) $y3, (float) $x4, (float) $y4
+        );
+    }
+
+    /**
+     * 绘制圆弧。
+     *
+     * @param int   $x           外接矩形左上角 x。
+     * @param int   $y           外接矩形左上角 y。
+     * @param int   $width       外接矩形宽度。
+     * @param int   $height      外接矩形高度。
+     * @param float $startAngle  起始角度（度）。
+     * @param float $sweepAngle  扫掠角度（度，正值顺时针）。
+     */
+    public function drawArc(
+        int $x, int $y, int $width, int $height,
+        float $startAngle, float $sweepAngle
+    ): void {
+        $this->ensureGdiPen();
+        $this->platform->getGdiplus()->GdipDrawArc(
+            $this->graphics, $this->gdiPen,
+            (float) $x, (float) $y, (float) $width, (float) $height,
+            $startAngle, $sweepAngle
+        );
+    }
+
+    // ============================================================
+    // 变换矩阵（#13）
+    // ============================================================
+
+    /**
+     * 平移变换。
+     *
+     * 后续绘制操作的原点偏移 (dx, dy)。
+     *
+     * @param float $dx x 方向偏移。
+     * @param float $dy y 方向偏移。
+     */
+    public function translate(float $dx, float $dy): void
+    {
+        // MatrixOrderPrepend=0：新变换在已有变换之前应用（后指定的先生效）
+        $this->platform->getGdiplus()->GdipTranslateWorldTransform(
+            $this->graphics, $dx, $dy, 0
+        );
+    }
+
+    /**
+     * 缩放变换。
+     *
+     * @param float $sx x 方向缩放比例。
+     * @param float $sy y 方向缩放比例。
+     */
+    public function scale(float $sx, float $sy): void
+    {
+        $this->platform->getGdiplus()->GdipScaleWorldTransform(
+            $this->graphics, $sx, $sy, 0
+        );
+    }
+
+    /**
+     * 旋转变换。
+     *
+     * @param float $angle 旋转角度（度，正值顺时针）。
+     */
+    public function rotate(float $angle): void
+    {
+        $this->platform->getGdiplus()->GdipRotateWorldTransform(
+            $this->graphics, $angle, 0
+        );
+    }
+
+    /**
+     * 保存当前图形状态（变换、裁剪等）。
+     *
+     * 可与 restore() 配对实现状态栈。
+     *
+     * @return int 状态 ID，传给 restore() 恢复。
+     */
+    public function save(): int
+    {
+        $gp = $this->platform->getGdiplus();
+        $state = $gp->new('unsigned int');
+        $gp->GdipSaveGraphics($this->graphics, \FFI::addr($state));
+        return (int) $state->cdata;
+    }
+
+    /**
+     * 恢复之前保存的图形状态。
+     *
+     * @param int $state save() 返回的状态 ID。
+     */
+    public function restore(int $state): void
+    {
+        $this->platform->getGdiplus()->GdipRestoreGraphics(
+            $this->graphics, $state
+        );
+    }
+
+    // ============================================================
+    // 裁剪（#14）
+    // ============================================================
+
+    /**
+     * 设置路径裁剪区域。
+     *
+     * 后续绘制操作仅在路径区域内可见。
+     *
+     * @param DrawPath $path 裁剪路径。
+     */
+    public function setClipPath(DrawPath $path): void
+    {
+        // CombineModeReplace=0
+        $this->platform->getGdiplus()->GdipSetClipPath(
+            $this->graphics, $path->getGpPath(), 0
+        );
+    }
+
+    /**
+     * 设置矩形裁剪区域。
+     *
+     * @param int $x 矩形左上角 x。
+     * @param int $y 矩形左上角 y。
+     * @param int $w 矩形宽度。
+     * @param int $h 矩形高度。
+     */
+    public function setClipRect(int $x, int $y, int $w, int $h): void
+    {
+        // CombineModeReplace=0
+        $this->platform->getGdiplus()->GdipSetClipRect(
+            $this->graphics, (float) $x, (float) $y, (float) $w, (float) $h, 0
+        );
+    }
+
+    /**
+     * 重置裁剪区域（移除所有裁剪限制）。
+     */
+    public function resetClip(): void
+    {
+        $this->platform->getGdiplus()->GdipResetClip($this->graphics);
+    }
+
+    // ============================================================
+    // 渐变画笔（#10）
+    // ============================================================
+
+    /**
+     * 设置渐变画笔（后续 fill 操作使用此画笔）。
+     *
+     * 传 null 恢复为纯色画刷。
+     *
+     * @param GradientBrush|null $brush 渐变画笔，或 null 恢复纯色。
+     */
+    public function setGradientBrush(?GradientBrush $brush): void
+    {
+        $this->gradientBrush = $brush;
+    }
+
+    // ============================================================
+    // 图像绘制（#23）
+    // ============================================================
+
+    /**
+     * 绘制图像（原始尺寸）。
+     *
+     * 在 (x, y) 处按图像自身像素尺寸绘制，不缩放。
+     *
+     * @param Image $image 图像对象。
+     * @param int   $x     目标左上角 x。
+     * @param int   $y     目标左上角 y。
+     */
+    public function drawImage(Image $image, int $x, int $y): void
+    {
+        $this->platform->getGdiplus()->GdipDrawImage(
+            $this->graphics,
+            $image->getGpImage(),
+            (float) $x,
+            (float) $y
+        );
+    }
+
+    /**
+     * 绘制图像（缩放到指定尺寸）。
+     *
+     * 将图像整体缩放绘制到 (x, y, w, h) 矩形内。
+     *
+     * @param Image $image 图像对象。
+     * @param int   $x     目标左上角 x。
+     * @param int   $y     目标左上角 y。
+     * @param int   $w     目标宽度。
+     * @param int   $h     目标高度。
+     */
+    public function drawImageScaled(Image $image, int $x, int $y, int $w, int $h): void
+    {
+        $this->platform->getGdiplus()->GdipDrawImageRect(
+            $this->graphics,
+            $image->getGpImage(),
+            (float) $x,
+            (float) $y,
+            (float) $w,
+            (float) $h
+        );
+    }
+
+    /**
+     * 绘制图像（裁剪 + 缩放）。
+     *
+     * 从图像源矩形 (sx, sy, sw, sh) 取出内容，绘制到目标矩形 (dx, dy, dw, dh)。
+     * 源/目标尺寸可不同，会自动缩放。源矩形超出图像范围的部分会被裁剪。
+     *
+     * @param Image $image 图像对象。
+     * @param int   $dx    目标左上角 x。
+     * @param int   $dy    目标左上角 y。
+     * @param int   $dw    目标宽度。
+     * @param int   $dh    目标高度。
+     * @param int   $sx    源左上角 x（图像坐标系）。
+     * @param int   $sy    源左上角 y（图像坐标系）。
+     * @param int   $sw    源宽度。
+     * @param int   $sh    源高度。
+     */
+    public function drawImageCropped(
+        Image $image,
+        int $dx, int $dy, int $dw, int $dh,
+        int $sx, int $sy, int $sw, int $sh
+    ): void {
+        // srcUnit=2 表示 UnitPixel（与 Graphics 像素坐标系一致）
+        // imageAttributes=null / callback=null / callbackData=null
+        $this->platform->getGdiplus()->GdipDrawImageRectRect(
+            $this->graphics,
+            $image->getGpImage(),
+            (float) $dx, (float) $dy, (float) $dw, (float) $dh,
+            (float) $sx, (float) $sy, (float) $sw, (float) $sh,
+            2, null, null, null
+        );
+    }
+
+    // ============================================================
     // 释放
     // ============================================================
 
@@ -517,6 +918,10 @@ final class DrawContext
 
         // GDI+ 释放
         $gp = $this->platform->getGdiplus();
+        if ($this->gdiPen !== null) {
+            $gp->GdipDeletePen($this->gdiPen);
+            $this->gdiPen = null;
+        }
         if ($this->gdiFont !== null) {
             $gp->GdipDeleteFont($this->gdiFont);
             $this->gdiFont = null;
@@ -577,5 +982,65 @@ final class DrawContext
     private function getDwRenderer(): ?DirectWriteRenderer
     {
         return null;
+    }
+
+    /**
+     * 确保 GDI+ 画笔已创建（按需创建）。
+     */
+    private function ensureGdiPen(): void
+    {
+        if ($this->gdiPen !== null) {
+            return;
+        }
+        $gp = $this->platform->getGdiplus();
+        $argb = self::colorToArgb($this->penColor);
+        $pen = $gp->new('GpPen');
+        $status = (int) $gp->GdipCreatePen1(
+            $argb, $this->penWidth, 2, \FFI::addr($pen)
+        );
+        if ($status !== 0) {
+            trigger_error('GdipCreatePen1 failed: ' . $status, \E_USER_WARNING);
+            return;
+        }
+        $this->gdiPen = $pen;
+    }
+
+    /**
+     * 确保填充画刷可用（纯色或渐变）。
+     */
+    private function ensureFillBrush(): void
+    {
+        if ($this->gradientBrush !== null) {
+            return;
+        }
+        if ($this->gdiBrush === null) {
+            $this->setColor($this->textColor);
+        }
+    }
+
+    /**
+     * 获取当前激活的填充画刷（渐变优先，否则纯色）。
+     */
+    private function getActiveFillBrush(): \FFI\CData
+    {
+        if ($this->gradientBrush !== null) {
+            return $this->gradientBrush->getBrush();
+        }
+        return $this->gdiBrush;
+    }
+
+    /**
+     * Color 转 GDI+ ARGB（int32 有符号）。
+     */
+    private static function colorToArgb(Color $c): int
+    {
+        $argb = (0xFF << 24)
+            | (($c->r & 0xFF) << 16)
+            | (($c->g & 0xFF) << 8)
+            | ($c->b & 0xFF);
+        if ($argb > 0x7FFFFFFF) {
+            $argb -= 0x100000000;
+        }
+        return $argb;
     }
 }

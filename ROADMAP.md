@@ -1,7 +1,7 @@
 # PHP UI 库功能路线图
 
 > 基于 libui-ng 功能对比，不模仿其设计，按自有 OOP 风格实现。
-> 最后更新：2026-07-24
+> 最后更新：2026-07-25（系统托盘 + 窗口图标支持）
 
 ## 一、已完成功能
 
@@ -10,20 +10,55 @@
 - 最大化/最小化/恢复/置顶/焦点
 - 多窗口支持
 - 垂直滚动（windowSetScrollable）
-- 事件：onClose / onResize / onFocus
+- 内边距（setMargined / getMargined，像素数）
+- 窗口图标（setIconFromFile / setIconFromId / setIconFromImage，
+  LoadImageW + WM_SETICON 同时设置 ICON_BIG（Alt+Tab）和 ICON_SMALL（标题栏/任务栏）；
+  支持 .ico 文件、预定义系统图标 IDI_APPLICATION/HAND/QUESTION/EXCLAMATION/ASTERISK、
+  以及 Image 对象（PNG/JPEG/BMP/GIF/TIFF 任意 GDI+ 格式，GdipCreateHICONFromBitmap 转换，
+  支持 alpha 透明通道））
+- 事件：onClose / onResize / onFocus / onPositionChanged（WM_MOVE）
 
 ### 控件
 - Button / Label / Entry / TextArea
 - Checkbox / RadioBox
 - ComboBox / ListBox
 - Slider / ProgressBar / SpinBox
+- ProgressBar 不确定状态（setIndeterminate，PBS_MARQUEE 滚动动画）
+- Slider onReleased 事件（拖动/操作结束，SB_ENDSCROLL）
 - Area（自定义绘图画布）
+- Area 滚动（setSize 启用 WS_HSCROLL/WS_VSCROLL，scrollTo 程序化滚动，
+  鼠标坐标自动转换为内容坐标系）
+- Table 表格（MVC 虚拟模式 LVS_OWNERDATA，TableModel 接口按需取数据，
+  支持大数据集；setColumns / setModel / select / refresh / refreshRow；
+  onSelectionChanged / onRowDoubleClicked 事件；
+  NM_CUSTOMDRAW 行级背景色/文字色 setRowBackgroundColor / setRowTextColor；
+  图像列支持 - TableModel::getCellImage 可选方法返回 Image，
+  LVS_EX_SUBITEMIMAGES + LVIF_IMAGE + ImageList 渲染单元格图标；
+  多类型列支持 - setColumnType 标记列类型，NM_CUSTOMDRAW CDDS_SUBITEM
+  阶段自绘 checkbox/progress/color/button 单元格，NM_CLICK +
+  LVM_SUBITEMHITTEST 命中测试触发 onCellCheckboxToggle/onCellButtonClick 回调）
+- 控件图像支持：
+  - Button 图标按钮（setImage，BS_BITMAP + BM_SETIMAGE）
+  - Label 图像标签（构造器 Image 参数，SS_BITMAP + STM_SETIMAGE）
+  - Tab 页签图标（setPageImage，TCM_SETIMAGELIST + TCM_SETITEMW）
+  - MenuItem 菜单项图标（setImage，SetMenuItemInfoW MIIM_BITMAP）
+- ImageList 通用 API（imageListCreate / imageListAddImage / imageListDestroy）
+- GDI+ 图像转 HBITMAP（gdipImageToHbitmapInt，GdipCreateHBITMAPFromBitmap）
+- PasswordEntry（密码框，ES_PASSWORD）
+- EditableComboBox（可编辑下拉框，CBS_DROPDOWN）
+- ColorButton（颜色选择按钮，封装 chooseColor 对话框）
+- FontButton（字体选择按钮，封装 chooseFont 对话框）
+- Separator（分隔线，水平/垂直 SS_ETCHEDHORZ/VERT）
+- DateTimePicker（日期时间选择器，DATE/TIME/DATETIME 三种模式）
 - 事件：onClick / onMouseDown/Up/Move / onKeyDown/Up
+- 事件：onMouseEnter / onMouseLeave（Area，TrackMouseEvent + WM_MOUSELEAVE）
 
 ### 布局
 - Box（HBox / VBox）
 - Grid
 - Form
+- Group（带标题边框分组容器，BS_GROUPBOX）
+- Tab（标签页容器，SysTabControl32，多页切换 + onPageChanged）
 - toplevel 标记区分顶层与嵌套容器，支持递归布局
 
 ### 菜单
@@ -40,6 +75,16 @@
 - 线 / 矩形 / 椭圆
 - 文本 / 富文本（AttributedString 多段不同样式）
 - pen / brush / font / color 设置
+- 路径系统（DrawPath：moveTo / lineTo / arcTo / bezierTo / quadTo / closeFigure）
+- fill / stroke 分离（fillRect / strokeRect / fillEllipse / strokeEllipse）
+- 路径填充 / 描边（fillPath / strokePath，支持 winding / alternate 填充规则）
+- 渐变画笔（GradientBrush 线性渐变，两色 + 多色停止点）
+- 贝塞尔曲线（drawBezier 三次曲线 + 路径 bezierTo / quadTo）
+- 圆弧（drawArc + 路径 arcTo，支持起始角和扫掠角）
+- 变换矩阵（translate / scale / rotate / save / restore 状态栈）
+- 裁剪（setClipPath / setClipRect / resetClip）
+- 图像加载与绘制（Image::fromFile 加载 BMP/PNG/JPEG/GIF/TIFF，
+  drawImage / drawImageScaled / drawImageCropped）
 
 ### 系统服务
 - 剪贴板（setText / getText）
@@ -47,6 +92,26 @@
 - 定时器（timer / clearTimer）
 - queueMain（主线程任务投递）
 - onShouldQuit（退出确认）
+
+### 系统托盘（Windows 特有）
+- TrayIcon 类封装 Shell_NotifyIconW（NIM_ADD / NIM_MODIFY / NIM_DELETE）
+- 图标设置（setIconFromFile / setIconFromIconId / setIconFromImage）：
+  - LoadImageW 加载 .ico 文件
+  - LoadIconW 加载预定义系统图标 IDI_APPLICATION/HAND/QUESTION/EXCLAMATION/ASTERISK
+  - GDI+ GdipCreateHICONFromBitmap 从 Image 对象创建（PNG/JPEG/BMP/GIF/TIFF，
+    支持 alpha 透明通道，适合彩色或半透明自定义图标）
+- 提示文本（setTooltip，鼠标悬停显示，最多 128 字符）
+- 气球通知（showBalloon，4 种类型 BALLOON_NONE/INFO/WARNING/ERROR，
+  NIIF_INFO/WARNING/ERROR/NONE 标志）
+- 事件回调（onClick / onDoubleClick / onRightClick，
+  通过 WM_APP+0x8000 自定义消息接收托盘鼠标事件）
+- 气球事件回调（onBalloonClick / onBalloonTimeout，
+  处理 NIN_BALLOONUSERCLICK=0x0405 / NIN_BALLOONTIMEOUT=0x0404 / NIN_BALLOONHIDE=0x0403）
+- 右键上下文菜单（setContextMenu，TrackPopupMenu 在鼠标位置弹出，
+  SetForegroundWindow + PostMessage(WM_NULL) 确保 Windows 菜单首次点击响应）
+- 托盘菜单命令分发（dispatchWmCommand 在窗口菜单栏找不到时遍历
+  trayIcons 的 contextMenu 查找菜单项）
+- 资源管理（ownsIcon 标记，析构时 NIM_DELETE + DestroyIcon）
 
 ### 进程管理（独有，libui-ng 无）
 - Process 类封装 proc_open
@@ -60,121 +125,7 @@
 
 ## 二、待实现功能清单
 
-### 优先级 P0（低难度高价值）
-
-#### 1. Tab 标签页容器
-- Win32 用 SysTabControl（ICC_TAB_CLASSES）
-- 方法：addPage(name, child) / removePage(index) / selectPage(index) / getSelectedPage()
-- 事件：onPageChanged
-
-#### 2. Group 分组容器
-- Win32 用 BUTTON + BS_GROUPBOX 或 WC_STATIC
-- 带标题的边框容器，内嵌单个子控件
-- 方法：setTitle(string) / setChild(Control)
-
-#### 3. Separator 分隔线
-- Win32 用 WC_STATIC + SS_ETCHEDHORZ / SS_ETCHEDVERT
-- 方法：new Separator(Orientation::HORIZONTAL | VERTICAL)
-
-#### 4. PasswordEntry 密码框
-- Entry 子类，加 ES_PASSWORD 样式
-- 方法：setMaskChar(char) / unmask()
-
-#### 5. EditableComboBox 可编辑下拉框
-- ComboBox 改用 CBS_DROPDOWN（非 CBS_DROPDOWNLIST）
-- 用户可输入自定义值
-
-#### 6. ColorButton 颜色选择按钮
-- 已有 chooseColor 对话框，封装成控件
-- 显示当前颜色，点击打开 chooseColor
-- 事件：onColorChanged
-
-#### 7. FontButton 字体选择按钮
-- 已有 chooseFont 对话框，封装成控件
-- 显示当前字体名，点击打开 chooseFont
-- 事件：onFontChanged
-
-### 优先级 P1（中难度高价值）
-
-#### 8. 绘图增强 - 路径系统
-- GDI BeginPath / LineTo / Arc / PolyBezier / EndPath
-- GDI+ 对应 API
-- 类：DrawPath（moveTo / lineTo / arcTo / bezierTo / closeFigure）
-- 方法：ctx->fillPath(path) / ctx->strokePath(path)
-- 填充规则：winding / alternate
-
-#### 9. 绘图增强 - fill/stroke 分离
-- 当前 drawRect 同时填充+边框，应分离
-- 方法：fillRect / strokeRect / fillEllipse / strokeEllipse
-- 或统一用 path + fillPath/strokePath
-
-#### 10. 绘图增强 - 渐变画笔
-- GDI+ LinearGradientBrush / RadialGradientBrush
-- 类：GradientBrush（linear / radial，多色停止点）
-- 方法：setGradientBrush(GradientBrush)
-
-#### 11. 绘图增强 - 贝塞尔曲线
-- GDI PolyBezier / GDI+ DrawBezier / DrawBeziers
-- 二次/三次贝塞尔
-
-#### 12. 绘图增强 - 圆弧
-- GDI Arc / GDI+ DrawArc / AddArc
-- 支持起始角和扫掠角
-
-#### 13. 绘图增强 - 变换矩阵
-- GDI+ SetTransform / MultiplyTransform / ResetTransform
-- 方法：translate(x,y) / scale(sx,sy) / rotate(angle) / skew
-- save() / restore() 状态栈
-
-#### 14. 绘图增强 - 裁剪
-- GDI+ SetClip / ResetClip / IntersectClip
-- 方法：setClipPath(path) / setClipRect(rect) / resetClip()
-
-#### 15. Area 键盘事件接入
-- WM_KEYDOWN/UP 已有，Area 需接入
-- Area 添加 onKeyDown / onKeyUp 闭包属性
-
-#### 16. Area 鼠标进入/离开
-- TrackMouseEvent + WM_MOUSELEAVE
-- Area 添加 onMouseEnter / onMouseLeave 闭包属性
-
-#### 17. DateTimePicker 日期时间选择器
-- Win32 用 DATETIMEPICK_CLASS（ICC_DATE_CLASSES）
-- 三种变体：日期+时间 / 仅日期 / 仅时间
-- 方法：getTime() / setTime() / 事件 onChanged
-
-### 优先级 P2（低难度中价值）
-
-#### 18. Slider onReleased 事件
-- WM_HSCROLL 的 SB_ENDSCROLL 通知码
-
-#### 19. ProgressBar 不确定状态
-- PBS_MARQUEE 样式 + PBM_SETMARQUEE 消息
-- 方法：setIndeterminate(bool)
-
-#### 20. 窗口 onPositionChanged 事件
-- WM_MOVE 消息
-- 闭包属性：onPositionChanged
-
-#### 21. 窗口边距 Margined
-- 客户区内偏移，布局时考虑边距
-- 方法：setMargined(bool) / getMargined()
-
-### 优先级 P3（高难度，需评估）
-
-#### 22. Table 表格（MVC）
-- Win32 ListView + NM_CUSTOMDRAW 自绘
-- 工程量巨大：LVITEM 操作、列类型、编辑、选择、排序
-- 评估是否值得投入
-
-#### 23. 图像加载与绘制
-- GDI+ Image / Bitmap 加载（BMP/PNG/JPEG/GIF）
-- 方法：drawImage(image, x, y) / drawImageScaled(...)
-- 支持高 DPI 多尺寸
-
-#### 24. Area 滚动
-- 滚动条 + 虚拟内容尺寸
-- 方法：setSize(w,h) / scrollTo(x,y,w,h)
+（P1/P2/P3 优先级任务全部完成。后续按需新增。）
 
 ## 三、技术限制（PHP FFI）
 
@@ -215,6 +166,7 @@ src/
 ├── App.php           应用入口
 ├── Window.php        窗口
 ├── Control.php       控件基类
+├── TrayIcon.php      系统托盘
 ├── Clipboard.php     剪贴板
 ├── Dialogs.php       对话框
 ├── Process.php       进程管理

@@ -19,7 +19,9 @@ use Kingbes\Ui\Control\ListBox;
 use Kingbes\Ui\Control\Slider;
 use Kingbes\Ui\Control\ProgressBar;
 use Kingbes\Ui\Control\SpinBox;
+use Kingbes\Ui\Control\Table;
 use Kingbes\Ui\Events\KeyEvent;
+use Kingbes\Ui\TrayIcon;
 use Kingbes\Ui\Events\MouseEvent;
 use Kingbes\Ui\Events\ResizeEvent;
 use Kingbes\Phpc\Library;
@@ -57,6 +59,7 @@ class WindowsPlatform extends AbstractPlatform
     private const WS_CAPTION          = 0x00C00000;
     private const WS_THICKFRAME       = 0x00040000;
     private const WS_VSCROLL          = 0x00200000;
+    private const WS_HSCROLL          = 0x00100000;
     private const WS_CHILD            = 0x40000000;
     private const WS_CLIPCHILDREN     = 0x02000000;
     private const WS_BORDER           = 0x00800000;
@@ -96,9 +99,11 @@ class WindowsPlatform extends AbstractPlatform
     private const WM_CREATE      = 0x0001;
     private const WM_DESTROY     = 0x0002;
     private const WM_SIZE        = 0x0005;
+    private const WM_MOVE        = 0x0003;
     private const WM_PAINT       = 0x000F;
     private const WM_CLOSE       = 0x0010;
     private const WM_QUIT        = 0x0012;
+    private const WM_NULL        = 0x0000;
     private const WM_SETFONT     = 0x0030;
     private const WM_COMMAND     = 0x0111;
     private const WM_NOTIFY      = 0x004E;
@@ -113,6 +118,7 @@ class WindowsPlatform extends AbstractPlatform
     private const WM_RBUTTONUP   = 0x0205;
     private const WM_MBUTTONDOWN = 0x0207;
     private const WM_MBUTTONUP   = 0x0208;
+    private const WM_MOUSELEAVE  = 0x02A3;
 
     // PeekMessage
     private const PM_REMOVE = 1;
@@ -124,6 +130,7 @@ class WindowsPlatform extends AbstractPlatform
     // ScrollBar 类型（SetScrollInfo/GetScrollInfo 第二参数 nBar）
     private const SB_CTL  = 2;  // 控件滚动条（Slider/ListBox 等）
     private const SB_VERT = 1;  // 窗口垂直滚动条
+    private const SB_HORZ = 0;  // 窗口水平滚动条
 
     // 光标 / 颜色
     private const IDC_ARROW    = 32512;
@@ -213,11 +220,45 @@ class WindowsPlatform extends AbstractPlatform
     // ProgressBar 消息
     private const PBM_SETRANGE     = 0x0401;
     private const PBM_SETPOS       = 0x0402;
+    private const PBM_SETMARQUEE   = 0x040A; // 启用/关闭滚动动画
+
+    // ProgressBar 样式
+    private const PBS_MARQUEE      = 0x0008; // 不确定状态样式
+
+    // Tab 控件消息（TCM_FIRST = 0x1300）
+    private const TCM_GETITEMCOUNT = 0x1304;
+    private const TCM_DELETEITEM   = 0x1308;
+    private const TCM_GETCURSEL    = 0x130B;
+    private const TCM_SETCURSEL    = 0x130C;
+    private const TCM_INSERTITEMW  = 0x1332;
+    private const TCM_GETITEMW     = 0x133C; // TCM_FIRST + 60
+    private const TCM_SETITEMW     = 0x133E; // TCM_FIRST + 62
+    private const TCM_SETIMAGELIST = 0x1303; // TCM_FIRST + 3
+
+    // Tab 控件通知码（TCN_FIRST = -550）
+    private const TCN_SELCHANGE    = -551;
+
+    // TCITEM mask
+    private const TCIF_TEXT        = 0x0001;
+    private const TCIF_IMAGE       = 0x0002;
+
+    // Static 控件消息（STM_SETIMAGE）：设置 Static 控件的图像
+    private const STM_SETIMAGE     = 0x0172;
+    // Static 控件图像类型
+    private const IMAGE_BITMAP     = 0;
+    private const IMAGE_ICON       = 1;
+
+    // Button 消息（BM_SETIMAGE）：设置按钮图像
+    private const BM_SETIMAGE      = 0x00F7;
+
+    // MENUITEMINFO mask
+    private const MIIM_BITMAP      = 0x00000080; // hbmpItem 有效
 
     // WM_COMMAND 通知码
     private const BN_CLICKED     = 0;
     private const EN_CHANGE      = 0x0300;
     private const CBN_SELCHANGE  = 1;
+    private const CBN_EDITCHANGE = 5;
     private const LBN_SELCHANGE  = 1;
 
     // WM_HSCROLL/WM_VSCROLL 通知码
@@ -230,6 +271,141 @@ class WindowsPlatform extends AbstractPlatform
     private const SB_TOP            = 6;
     private const SB_BOTTOM         = 7;
     private const SB_ENDSCROLL      = 8;
+
+    // TrackMouseEvent 标志
+    private const TME_LEAVE = 0x0002;
+
+    // DateTimePicker 样式
+    private const DTS_SHORTDATEFORMAT  = 0x0000; // 默认短日期
+    private const DTS_UPDOWN          = 0x0001; // 用 UpDown 替代下拉日历
+    private const DTS_SHOWNONE        = 0x0002; // 允许无选择（复选框）
+    private const DTS_LONGDATEFORMAT  = 0x0004; // 长日期
+    private const DTS_TIMEFORMAT      = 0x0009; // 仅时间（DTS_TIMEFORMAT|DTS_UPDOWN）
+    private const DTS_RIGHTALIGN      = 0x0020; // 右对齐
+
+    // DateTimePicker 消息（DTM_FIRST = 0x1000）
+    private const DTM_GETSYSTEMTIME = 0x1001; // DTM_FIRST + 1
+    private const DTM_SETSYSTEMTIME = 0x1002; // DTM_FIRST + 2
+    private const DTM_SETFORMATW    = 0x1032; // DTM_FIRST + 50 (Unicode)
+
+    // DateTimePicker 通知（DTN_FIRST2 = -753）
+    private const DTN_DATETIMECHANGE = -759;
+
+    // DateTimePicker 返回值
+    private const GDT_VALID = 0; // 时间有效
+    private const GDT_NONE  = 1; // 未选择（DTS_SHOWNONE）
+
+    // ============================================================
+    // ListView 消息常量（LVM_FIRST = 0x1000）
+    // ============================================================
+
+    private const LVM_FIRST               = 0x1000;
+    private const LVM_SETITEMCOUNT        = 0x102F; // LVM_FIRST + 47
+    private const LVM_GETITEMCOUNT        = 0x1004; // LVM_FIRST + 4
+    private const LVM_DELETEALLITEMS      = 0x1009; // LVM_FIRST + 9
+    private const LVM_INSERTCOLUMNW       = 0x1061; // LVM_FIRST + 97 (Unicode)
+    private const LVM_DELETECOLUMN        = 0x101C; // LVM_FIRST + 28
+    private const LVM_GETSELECTIONMARK    = 0x102E; // LVM_FIRST + 46
+    private const LVM_SETSELECTIONMARK    = 0x102D; // LVM_FIRST + 45
+    private const LVM_GETNEXTITEM         = 0x100C; // LVM_FIRST + 12
+    private const LVM_SETITEMSTATE        = 0x102B; // LVM_FIRST + 43
+    private const LVM_ENSUREVISIBLE       = 0x1013; // LVM_FIRST + 19
+    private const LVM_REDRAWITEMS         = 0x1016; // LVM_FIRST + 22
+    private const LVM_GETITEMSTATE        = 0x102C; // LVM_FIRST + 44
+    private const LVM_SETEXTENDEDLISTVIEWSTYLE = 0x1036; // LVM_FIRST + 54
+    private const LVM_SETIMAGELIST        = 0x1003; // LVM_FIRST + 3
+
+    // ListView 扩展样式
+    private const LVS_EX_SUBITEMIMAGES = 0x00000008; // 子列支持图像
+    // ListView 图像列表类型（LVM_SETIMAGELIST 的 wParam）
+    private const LVSIL_SMALL = 1;
+
+    // LVITEM mask
+    private const LVIF_TEXT   = 0x0001;
+    private const LVIF_IMAGE  = 0x0002;
+    private const LVIF_STATE  = 0x0008;
+
+    // LVITEM state
+    private const LVIS_SELECTED = 0x0002;
+    private const LVIS_FOCUSED  = 0x0001;
+
+    // LVM_GETNEXTITEM 参数
+    private const LVNI_SELECTED = 0x0002;
+
+    // LVCOLUMN mask
+    private const LVCF_FMT   = 0x0001;
+    private const LVCF_WIDTH = 0x0002;
+    private const LVCF_TEXT  = 0x0004;
+
+    // LVCOLUMN fmt
+    private const LVCFMT_LEFT = 0x0000;
+
+    // ListView 通知码（LVN_FIRST = -100）
+    private const LVN_ITEMCHANGED   = -101; // LVN_FIRST - 1
+    private const LVN_GETDISPINFO   = -177; // LVN_FIRST - 77 (Unicode: LVN_GETDISPINFOW)
+    private const LVN_GETDISPINFOW  = -177;
+
+    // NM 通知码（NM_FIRST = 0）
+    private const NM_DBLCLK    = -3;
+    private const NM_CUSTOMDRAW = -12;
+    private const NM_CLICK     = -2;   // NM_FIRST - 2
+
+    // NM_CUSTOMDRAW 阶段
+    private const CDDS_PREPAINT     = 0x00000001;
+    private const CDDS_ITEMPREPAINT = 0x00010001;
+    private const CDDS_SUBITEM      = 0x00020000;
+
+    // NM_CUSTOMDRAW 返回值
+    private const CDRF_DODEFAULT         = 0x00000000;
+    private const CDRF_NOTIFYITEMDRAW    = 0x00000020;
+    private const CDRF_NOTIFYPOSTPAINT   = 0x00000010;
+    private const CDRF_NEWFONT           = 0x00000040;
+    private const CDRF_NOTIFYSUBITEMDRAW = 0x00000020;
+    private const CDRF_SKIPDEFAULT       = 0x00000004;
+
+    // LVM_SUBITEMHITTEST = LVM_FIRST + 57
+    private const LVM_SUBITEMHITTEST = 0x1039;
+
+    // LVHITTESTINFO flags（命中测试标志）
+    private const LVHT_ONITEMICON    = 0x0002;
+    private const LVHT_ONITEMLABEL   = 0x0004;
+    private const LVHT_ONITEMSTATEICON = 0x0008;
+    private const LVHT_ONITEM = 0x000E;  // 上述三者 OR
+
+    // DrawEdge edge 标志
+    private const BDR_RAISEDINNER = 0x0004;
+    private const BDR_SUNKENINNER = 0x0008;
+    private const BDR_RAISEDOUTER = 0x0001;
+    private const BDR_SUNKENOUTER = 0x0002;
+    private const EDGE_SUNKEN     = 0x0005;  // BDR_SUNKENOUTER | BDR_SUNKENINNER
+    private const EDGE_RAISED     = 0x0001;  // BDR_RAISEDOUTER | BDR_RAISEDINNER (此处简化为外框)
+    private const EDGE_ETCHED     = 0x0006;
+    private const BF_TOP    = 0x0001;
+    private const BF_BOTTOM = 0x0004;
+    private const BF_LEFT   = 0x0008;
+    private const BF_RIGHT  = 0x0002;
+    private const BF_RECT   = 0x000F;  // TOP|LEFT|BOTTOM|RIGHT
+
+    // DrawFrameControl uType / uState
+    private const DFC_BUTTON = 0x0004;
+    private const DFC_MENU   = 0x0002;
+    private const DFCS_BUTTONPUSH  = 0x0000;
+    private const DFCS_BUTTONCHECK = 0x0001;
+    private const DFCS_CHECKED     = 0x0100;
+    private const DFCS_FLAT        = 0x4000;
+    private const DFCS_PUSHED      = 0x0200;
+    private const DFCS_INACTIVE    = 0x0100;
+
+    // GetSysColorBrush 系统颜色索引
+    private const COLOR_BTNFACE    = 15;
+    private const COLOR_HIGHLIGHT  = 13;
+    private const COLOR_BTNTEXT    = 18;
+    private const COLOR_WINDOWTEXT = 8;
+
+    // DrawTextW 格式标志
+    private const DT_CENTER     = 0x00000001;
+    private const DT_VCENTER    = 0x00000004;
+    private const DT_SINGLELINE = 0x00000020;
 
     // SCROLLINFO fMask
     private const SIF_RANGE           = 0x0001;
@@ -256,6 +432,73 @@ class WindowsPlatform extends AbstractPlatform
 
     // 菜单相关消息
     private const WM_INITMENUPOPUP = 0x0117;
+
+    // ============================================================
+    // 托盘图标（Shell_NotifyIconW）
+    // ============================================================
+
+    /** NIM_ADD / NIM_MODIFY / NIM_DELETE：添加/修改/删除托盘图标 */
+    private const NIM_ADD    = 0x00000000;
+    private const NIM_MODIFY = 0x00000001;
+    private const NIM_DELETE = 0x00000002;
+
+    /** NOTIFYICONDATAW.uFlags 标志位 */
+    private const NIF_MESSAGE = 0x00000001; // uCallbackMessage 有效
+    private const NIF_ICON    = 0x00000002; // hIcon 有效
+    private const NIF_TIP     = 0x00000004; // szTip 有效
+    private const NIF_INFO    = 0x00000010; // szInfo/szInfoTitle 有效（气球）
+    private const NIF_STATE   = 0x00000008; // dwState/dwStateMask 有效
+
+    /** 托盘气球通知图标类型 */
+    private const NIIF_NONE      = 0x00000000;
+    private const NIIF_INFO      = 0x00000001;
+    private const NIIF_WARNING   = 0x00000002;
+    private const NIIF_ERROR     = 0x00000003;
+    private const NIIF_USER      = 0x00000004;
+
+    /** 托盘回调消息的 lParam（鼠标消息） */
+    private const WM_LBUTTONCLK_TRAY  = 0x0202;  // WM_LBUTTONUP
+    private const WM_LBUTTONDBLCLK_TRAY = 0x0203; // WM_LBUTTONDBLCLK
+    private const WM_RBUTTONUP_TRAY   = 0x0205;  // WM_RBUTTONUP
+
+    /** 自定义消息基址（WM_APP = 0x8000）用于托盘回调 */
+    private const WM_APP = 0x8000;
+    private const WM_TRAYICON = 0x8000;  // 托盘回调消息 ID
+
+    // ============================================================
+    // 窗口图标（LoadImageW + WM_SETICON）
+    // ============================================================
+
+    /** WM_SETICON 消息（设置窗口图标） */
+    private const WM_SETICON = 0x0080;
+    /** ICON_BIG / ICON_SMALL：大/小图标 */
+    private const ICON_BIG   = 1;
+    private const ICON_SMALL = 0;
+
+    /** LoadImageW type 参数 */
+    private const IMAGE_BITMAP_LOAD = 0;  // LR_BITMAP
+    private const IMAGE_ICON_LOAD   = 1;  // LR_ICON
+    private const IMAGE_CURSOR_LOAD = 2;  // LR_CURSOR
+
+    /** LoadImageW fuLoad 标志 */
+    private const LR_LOADFROMFILE = 0x00000010;
+    private const LR_DEFAULTSIZE  = 0x00000040;
+
+    /** TrackPopupMenu uFlags 标志 */
+    private const TPM_LEFTBUTTON  = 0x00000000;
+    private const TPM_RIGHTBUTTON = 0x00000002;
+    private const TPM_LEFTALIGN   = 0x00000000;
+    private const TPM_CENTERALIGN = 0x00000004;
+    private const TPM_RIGHTALIGN  = 0x00000008;
+    private const TPM_RETURNCMD   = 0x00000100;  // 返回选中项 ID 而非 BOOL
+
+    /** LoadIconW 预定义图标 ID（IDI_*） */
+    private const IDI_APPLICATION = 32512;
+    private const IDI_HAND        = 32513;
+    private const IDI_QUESTION    = 32514;
+    private const IDI_EXCLAMATION = 32515;
+    private const IDI_ASTERISK    = 32516;
+    private const IDI_INFORMATION = 32516;
 
     // ============================================================
     // FFI 实例
@@ -317,6 +560,29 @@ class WindowsPlatform extends AbstractPlatform
     /** 控件类型表：hwnd(int) => 原生类名（用于区分 ComboBox/ListBox 消息）。 */
     private array $controlTypes = [];
 
+    /**
+     * 已注册的 TrayIcon 实例列表：trayId => TrayIcon。
+     *
+     * 用于 WM_TRAYICON 回调分发，根据 lParam（鼠标消息类型）调用
+     * 对应 TrayIcon::handleCallback。
+     *
+     * @var array<int, \Kingbes\Ui\TrayIcon>
+     */
+    private array $trayIcons = [];
+
+    /** TrayIcon ID 自增计数器（同一窗口内多个托盘需唯一）。 */
+    private int $nextTrayId = 1;
+
+    /**
+     * 窗口自定义图标缓存：hwnd(int) => HICON int 句柄。
+     *
+     * windowSetIconFromImage 时存储，下次设置前 / 窗口销毁时调用
+     * destroyIconInt 释放，避免内存泄漏。
+     *
+     * @var array<int, int>
+     */
+    private array $windowImageIcons = [];
+
     /** 默认字体 HFONT（CData，保持引用防 GC）。 */
     private $defaultFont = null;
 
@@ -333,6 +599,59 @@ class WindowsPlatform extends AbstractPlatform
      * @var array<int, \FFI\CData>
      */
     private array $menus = [];
+
+    /**
+     * Area 鼠标跟踪状态：hwnd(int) => bool。
+     *
+     * true 表示已调用 TrackMouseEvent 注册 WM_MOUSELEAVE，处于"鼠标在
+     * 区域内"状态。WM_MOUSELEAVE 触发后清除，下次 WM_MOUSEMOVE 时重新
+     * 注册并触发 onMouseEnter。
+     *
+     * @var array<int, bool>
+     */
+    private array $areaMouseTracking = [];
+
+    /**
+     * Area 滚动状态：hwnd(int) => ['w'=>int, 'h'=>int, 'x'=>int, 'y'=>int]。
+     *
+     * areaSetScrollable 初始化：w/h 为内容尺寸，x/y 为当前滚动偏移。
+     * WM_HSCROLL/WM_VSCROLL 时更新 x/y 并 Invalidate 触发重绘。
+     * WM_PAINT 时由 GdipTranslateWorldTransform(-x, -y) 应用偏移，
+     * 用户 onDraw 在内容坐标系（0,0 ~ w,h）内绘制即可。
+     * 鼠标事件分发时将客户端坐标 +x/+y 转换为内容坐标。
+     *
+     * @var array<int, array{w:int, h:int, x:int, y:int}>
+     */
+    private array $areaScrollInfo = [];
+
+    /**
+     * Table 行背景色：hwnd(int) => [row(int) => COLORREF(int)]。
+     *
+     * NM_CUSTOMDRAW 时查表，若命中则设置 clrTextBk。
+     * 由 tableSetRowBgColor 写入，tableSetRowBgColor(null) 清除。
+     *
+     * @var array<int, array<int, int>>
+     */
+    private array $tableRowBgColors = [];
+
+    /**
+     * Table 行文字色：hwnd(int) => [row(int) => COLORREF(int)]。
+     *
+     * NM_CUSTOMDRAW 时查表，若命中则设置 clrText。
+     *
+     * @var array<int, array<int, int>>
+     */
+    private array $tableRowTextColors = [];
+
+    /**
+     * ImageList 保活表：int 句柄 => HIMAGELIST CData。
+     *
+     * 由 tableCreateImageList / tabCreateImageList 写入，
+     * 防止 GC 回收后地址失效（与 $menus 同理）。
+     *
+     * @var array<int, \FFI\CData>
+     */
+    private array $imageLists = [];
 
     // ============================================================
     // 构造器：加载 6 个系统 DLL
@@ -408,11 +727,13 @@ typedef void* HINSTANCE;
 typedef void* HBRUSH;
 typedef void* HICON;
 typedef void* HCURSOR;
+typedef void* HBITMAP;
 typedef unsigned long DWORD;
 typedef unsigned int UINT;
 typedef int LONG;
 typedef long long LONG_PTR;
 typedef unsigned long long UINT_PTR;
+typedef unsigned long long ULONG_PTR;
 typedef unsigned long long WPARAM;
 typedef long long LPARAM;
 typedef long long LRESULT;
@@ -427,6 +748,9 @@ typedef wchar_t* LPWSTR;
 typedef int BOOL;
 
 typedef union { long long i; void* p; } INT_TO_PTR;
+typedef long long DWORD_PTR;
+typedef long long LONG_PTR;
+typedef unsigned long COLORREF;
 
 typedef struct tagPOINT { LONG x; LONG y; } POINT;
 typedef struct tagRECT { LONG left; LONG top; LONG right; LONG bottom; } RECT;
@@ -443,6 +767,98 @@ typedef struct tagSCROLLINFO {
     int  nTrackPos;
 } SCROLLINFO;
 typedef SCROLLINFO* LPSCROLLINFO;
+
+// WM_NOTIFY 通用头部
+typedef struct tagNMHDR {
+    HWND     hwndFrom;
+    UINT_PTR idFrom;
+    UINT     code;   // 通知码（int 范围，TCN_SELCHANGE=-551 需用有符号比较）
+} NMHDR;
+
+// ListView 项结构（LVITEMW）
+typedef struct tagLVITEMW {
+    UINT   mask;
+    int    iItem;
+    int    iSubItem;
+    UINT   state;
+    UINT   stateMask;
+    LPWSTR pszText;
+    int    cchTextMax;
+    int    iImage;
+    LPARAM lParam;
+} LVITEMW;
+
+// ListView 列结构（LVCOLUMNW）
+typedef struct tagLVCOLUMNW {
+    UINT   mask;
+    int    fmt;
+    int    cx;
+    LPWSTR pszText;
+    int    cchTextMax;
+    int    iSubItem;
+    int    iImage;
+    int    iOrder;
+} LVCOLUMNW;
+
+// ListView 命中测试结构（LVM_SUBITEMHITTEST 用）
+typedef struct tagLVHITTESTINFO {
+    POINT pt;
+    UINT  flags;
+    int   iItem;
+    int   iSubItem;
+    int   iGroup;
+} LVHITTESTINFO;
+
+// NMLISTVIEW：LVN_ITEMCHANGED 等通知结构
+typedef struct tagNMLISTVIEW {
+    NMHDR  hdr;
+    int    iItem;
+    int    iSubItem;
+    UINT   uNewState;
+    UINT   uOldState;
+    UINT   uChanged;
+    POINT  ptAction;
+    LPARAM lParam;
+} NMLISTVIEW;
+
+// NMLVDISPINFO：LVN_GETDISPINFO 通知结构（包含 LVITEMW）
+typedef struct tagNMLVDISPINFO {
+    NMHDR   hdr;
+    LVITEMW item;
+} NMLVDISPINFO;
+
+// NMLVCUSTOMDRAW：NM_CUSTOMDRAW 自绘结构
+typedef struct tagNMLVCUSTOMDRAW {
+    NMHDR   hdr;
+    DWORD   dwDrawStage;
+    HDC     hdc;
+    RECT    rc;
+    DWORD_PTR dwItemSpec;
+    UINT    uItemState;
+    LONG_PTR lItemlParam;
+    COLORREF clrText;
+    COLORREF clrTextBk;
+    int     iSubItem;
+    DWORD   dwItemType;
+    COLORREF clrFace;
+    int     iIconEffect;
+    int     iIconPhase;
+    int     iPartId;
+    int     iStateId;
+    RECT    rcText;
+    UINT    uAlign;
+} NMLVCUSTOMDRAW;
+
+// Tab 控件项结构（TCITEMW）
+typedef struct tagTCITEMW {
+    UINT   mask;
+    DWORD  dwState;
+    DWORD  dwStateMask;
+    LPWSTR pszText;
+    int    cchTextMax;
+    int    iImage;
+    LPARAM lParam;
+} TCITEMW;
 
 typedef struct tagPAINTSTRUCT {
     HDC  hdc;
@@ -505,6 +921,11 @@ HWND    SetParent(HWND hWndChild, HWND hWndNewParent);
 BOOL    SetMenu(HWND hWnd, HMENU hMenu);
 int     GetSystemMetrics(int nIndex);
 HCURSOR LoadCursorW(HINSTANCE hInstance, UINT_PTR lpCursorName);
+HICON   LoadIconW(HINSTANCE hInstance, UINT_PTR lpIconName);
+HICON   LoadImageW(HINSTANCE hInst, LPCWSTR name, UINT type, int cx, int cy, UINT fuLoad);
+HICON   CopyIcon(HICON hIcon);
+BOOL    DestroyIcon(HICON hIcon);
+BOOL    SetForegroundWindow(HWND hWnd);
 BOOL    InvalidateRect(HWND hWnd, const RECT *lpRect, BOOL bErase);
 BOOL    OpenClipboard(HWND hWndNewOwner);
 BOOL    EmptyClipboard(void);
@@ -521,10 +942,67 @@ BOOL    InsertMenuW(HMENU hMenu, UINT uPosition, UINT uFlags, UINT_PTR uIDNewIte
 BOOL    CheckMenuItem(HMENU hMenu, UINT uIDCheckItem, UINT uCheck);
 BOOL    EnableMenuItem(HMENU hMenu, UINT uIDEnableItem, UINT uEnable);
 BOOL    DrawMenuBar(HWND hWnd);
+/* 弹出菜单（TrackPopupMenu，用于托盘右键菜单） */
+BOOL    TrackPopupMenu(HMENU hMenu, UINT uFlags, int x, int y, int nReserved, HWND hWnd, const RECT *prcRect);
+
+/* 菜单项信息（用于设置菜单项位图图标） */
+typedef struct tagMENUITEMINFOW {
+    UINT    cbSize;
+    UINT    fMask;
+    UINT    fType;
+    UINT    fState;
+    UINT    wID;
+    HMENU   hSubMenu;
+    HBITMAP hbmpChecked;
+    HBITMAP hbmpUnchecked;
+    ULONG_PTR dwItemData;
+    LPWSTR  dwTypeData;
+    UINT    cch;
+    HBITMAP hbmpItem;
+} MENUITEMINFOW;
+
+BOOL SetMenuItemInfoW(HMENU hmenu, UINT item, BOOL fByPosition, const MENUITEMINFOW* lpmii);
+BOOL GetMenuItemInfoW(HMENU hmenu, UINT item, BOOL fByPosition, MENUITEMINFOW* lpmii);
 HDC     BeginPaint(HWND hwnd, PAINTSTRUCT* lpPaint);
 BOOL    EndPaint(HWND hwnd, PAINTSTRUCT* lpPaint);
 int     SetScrollInfo(HWND hwnd, int nBar, LPSCROLLINFO lpsi, BOOL redraw);
 BOOL    GetScrollInfo(HWND hwnd, int nBar, LPSCROLLINFO lpsi);
+
+/* 鼠标跟踪：用于 Area WM_MOUSELEAVE 通知 */
+typedef struct tagTRACKMOUSEEVENT {
+    DWORD cbSize;
+    DWORD dwFlags;
+    HWND  hwndTrack;
+    DWORD dwHoverTime;
+} TRACKMOUSEEVENT;
+BOOL    TrackMouseEvent(TRACKMOUSEEVENT* lpEventTrack);
+
+/* 焦点：Area 在鼠标点击时调用 SetFocus 获得键盘焦点 */
+HWND    SetFocus(HWND hWnd);
+HWND    GetFocus(void);
+
+/* 自绘辅助：用于 Table 单元格自绘 checkbox/progress/color/button */
+int     FillRect(HDC hDC, const RECT *lprc, HBRUSH hbr);
+BOOL    DrawEdge(HDC hdc, RECT *qrc, int edge, int grfFlags);
+BOOL    DrawFrameControl(HDC hdc, RECT *lprc, int uType, int uState);
+int     DrawTextW(HDC hdc, LPCWSTR lpchText, int cchText, RECT *lprc, UINT format);
+BOOL    InflateRect(RECT *lprc, int dx, int dy);
+BOOL    PtInRect(const RECT *lprc, POINT pt);
+BOOL    ScreenToClient(HWND hWnd, POINT *lpPoint);
+DWORD   GetMessagePos(void);
+HBRUSH  GetSysColorBrush(int nIndex);
+
+/* SYSTEMTIME：DateTimePicker 日期时间值 */
+typedef struct _SYSTEMTIME {
+    unsigned short wYear;
+    unsigned short wMonth;
+    unsigned short wDayOfWeek;
+    unsigned short wDay;
+    unsigned short wHour;
+    unsigned short wMinute;
+    unsigned short wSecond;
+    unsigned short wMilliseconds;
+} SYSTEMTIME;
 C;
 
     /**
@@ -579,6 +1057,8 @@ typedef const wchar_t* LPCWSTR;
 HMODULE GetModuleHandleW(LPCWSTR lpModuleName);
 void*   GetProcAddress(HMODULE hModule, const char* lpProcName);
 void    ExitProcess(UINT uExitCode);
+DWORD   GetLastError(void);
+void    SetLastError(DWORD dwErrCode);
 
 void*   GlobalAlloc(UINT uFlags, DWORD dwBytes);
 char*   GlobalLock(void* hMem);
@@ -592,6 +1072,10 @@ C;
     private const COMCTL32_HEADER = <<<C
 typedef unsigned long DWORD;
 typedef unsigned int UINT;
+typedef int BOOL;
+typedef long long LPARAM;
+
+typedef union { long long i; void* p; } INT_TO_PTR;
 
 typedef struct tagINITCOMMONCONTROLSEX {
     DWORD dwSize;
@@ -600,6 +1084,17 @@ typedef struct tagINITCOMMONCONTROLSEX {
 
 void InitCommonControlsEx(const INITCOMMONCONTROLSEX *piccs);
 void InitCommonControls(void);
+
+/* ImageList（图像列表，供 ListView/Tab 图像列使用） */
+typedef void* HIMAGELIST;
+typedef void* HBITMAP;
+
+// 创建图像列表：cx/cy=图像尺寸，flags=0x00000020(ILC_COLOR32)，初始/增长容量
+HIMAGELIST ImageList_Create(int cx, int cy, UINT flags, int cInitial, int cGrow);
+// 添加 HBITMAP 到图像列表，返回索引；-1 失败。hbmMask 可为 NULL
+int ImageList_Add(HIMAGELIST himl, HBITMAP hbmImage, HBITMAP hbmMask);
+// 销毁图像列表
+BOOL ImageList_Destroy(HIMAGELIST himl);
 C;
 
     /**
@@ -715,12 +1210,15 @@ C;
     private const SHELL32_HEADER = <<<C
 typedef void* HWND;
 typedef void* LPCITEMIDLIST;
+typedef void* HICON;
 typedef unsigned int UINT;
 typedef int BOOL;
 typedef unsigned short wchar_t;
 typedef long long LPARAM;
+typedef unsigned long DWORD;
 typedef const wchar_t* LPCWSTR;
 typedef wchar_t* LPWSTR;
+typedef char* LPSTR;
 
 typedef union { long long i; void* p; } INT_TO_PTR;
 
@@ -737,6 +1235,29 @@ typedef struct _browseinfoW {
 
 void* SHBrowseForFolderW(BROWSEINFOW *lpbi);
 BOOL SHGetPathFromIDListW(void* pidl, wchar_t* pszPath);
+
+/* 系统托盘：Shell_NotifyIconW（使用 v3 尺寸，不含 GUID/balloonIcon 字段，
+   通过 cbSize = sizeof(到 szInfoTitle+dwInfoFlags) 兼容 Windows 2000+） */
+typedef struct _NOTIFYICONDATAW {
+    DWORD cbSize;
+    HWND  hWnd;
+    UINT  uID;
+    UINT  uFlags;
+    UINT  uCallbackMessage;
+    HICON hIcon;
+    wchar_t szTip[128];
+    DWORD dwState;
+    DWORD dwStateMask;
+    wchar_t szInfo[256];
+    union {
+        UINT uTimeout;
+        UINT uVersion;
+    } DUMMYUNIONNAME;
+    wchar_t szInfoTitle[64];
+    DWORD dwInfoFlags;
+} NOTIFYICONDATAW;
+
+BOOL Shell_NotifyIconW(DWORD dwMessage, NOTIFYICONDATAW *lpdata);
 C;
 
     /**
@@ -806,6 +1327,88 @@ Status  GdipCreateSolidFill(int argb, GpSolidFill** brush);
 Status  GdipDeleteBrush(GpBrush* brush);
 Status  GdipDrawString(GpGraphics* graphics, const wchar_t* string, int length, GpFont* font, RectF* layoutRect, GpStringFormat* format, GpBrush* brush);
 Status  GdipMeasureString(GpGraphics* graphics, const wchar_t* string, int length, GpFont* font, RectF* layoutRect, GpStringFormat* format, RectF* boundingBox, int* codepointsFitted, int* linesFilled);
+
+/* ---- 路径系统 ---- */
+typedef void* GpPath;
+typedef void* GpPen;
+typedef void* GpLineGradient;
+typedef void* GpMatrix;
+
+typedef struct { float X; float Y; } PointF;
+
+Status  GdipCreatePath(int fillMode, GpPath** path);
+Status  GdipDeletePath(GpPath* path);
+Status  GdipStartPathFigure(GpPath* path);
+Status  GdipAddPathLine(GpPath* path, float x1, float y1, float x2, float y2);
+Status  GdipAddPathBezier(GpPath* path, float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4);
+Status  GdipAddPathArc(GpPath* path, float x, float y, float width, float height, float startAngle, float sweepAngle);
+Status  GdipClosePathFigure(GpPath* path);
+
+/* ---- GDI+ 画笔 ---- */
+Status  GdipCreatePen1(int argb, float width, int unit, GpPen** pen);
+Status  GdipDeletePen(GpPen* pen);
+
+/* ---- GDI+ 填充/描边/曲线/圆弧 ---- */
+Status  GdipDrawPath(GpGraphics* graphics, GpPen* pen, GpPath* path);
+Status  GdipFillPath(GpGraphics* graphics, GpBrush* brush, GpPath* path);
+Status  GdipFillRectangle(GpGraphics* graphics, GpBrush* brush, float x, float y, float width, float height);
+Status  GdipDrawRectangle(GpGraphics* graphics, GpPen* pen, float x, float y, float width, float height);
+Status  GdipFillEllipse(GpGraphics* graphics, GpBrush* brush, float x, float y, float width, float height);
+Status  GdipDrawEllipse(GpGraphics* graphics, GpPen* pen, float x, float y, float width, float height);
+Status  GdipDrawLine(GpGraphics* graphics, GpPen* pen, float x1, float y1, float x2, float y2);
+Status  GdipDrawBezier(GpGraphics* graphics, GpPen* pen, float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4);
+Status  GdipDrawArc(GpGraphics* graphics, GpPen* pen, float x, float y, float width, float height, float startAngle, float sweepAngle);
+
+/* ---- 变换矩阵 ---- */
+Status  GdipTranslateWorldTransform(GpGraphics* graphics, float dx, float dy, int order);
+Status  GdipScaleWorldTransform(GpGraphics* graphics, float sx, float sy, int order);
+Status  GdipRotateWorldTransform(GpGraphics* graphics, float angle, int order);
+Status  GdipResetWorldTransform(GpGraphics* graphics);
+Status  GdipSaveGraphics(GpGraphics* graphics, unsigned int* state);
+Status  GdipRestoreGraphics(GpGraphics* graphics, unsigned int state);
+
+/* ---- 裁剪 ---- */
+Status  GdipSetClipPath(GpGraphics* graphics, GpPath* path, int combineMode);
+Status  GdipSetClipRect(GpGraphics* graphics, float x, float y, float width, float height, int combineMode);
+Status  GdipResetClip(GpGraphics* graphics);
+
+/* ---- 线性渐变画笔 ---- */
+Status  GdipCreateLineBrush(PointF* point1, PointF* point2, int color1, int color2, int wrapMode, GpLineGradient** lineGradient);
+Status  GdipSetLinePresetBlend(GpLineGradient* brush, int* blendColors, float* blendPositions, int count);
+Status  GdipSetLineGammaCorrection(GpLineGradient* brush, BOOL useGammaCorrection);
+
+/* ---- 图像 / 位图 ---- */
+typedef void* GpImage;
+typedef void* GpBitmap;
+
+/* 从文件加载图像（支持 BMP/PNG/JPEG/GIF/TIFF，wchar_t 路径） */
+Status  GdipLoadImageFromFile(const wchar_t* filename, GpImage** image);
+Status  GdipDisposeImage(GpImage* image);
+Status  GdipGetImageWidth(GpImage* image, unsigned int* width);
+Status  GdipGetImageHeight(GpImage* image, unsigned int* height);
+
+/* 将 GpBitmap 转换为 HBITMAP（带 alpha 预乘背景色），供 ImageList 使用。
+   hbm 接收结果，调用方需 DeleteObject 释放。argbBackground 为背景色（0xAARRGGBB）。 */
+Status  GdipCreateHBITMAPFromBitmap(GpBitmap* bitmap, void** hbm, int argbBackground);
+
+/* 将 GpBitmap 转换为 HICON（保持 alpha 通道），供窗口/托盘图标使用。
+   hicon 接收结果，调用方需 DestroyIcon 释放。 */
+Status  GdipCreateHICONFromBitmap(GpBitmap* bitmap, void** hicon);
+
+/* 获取 GpImage 的类型（ImageType：0=Unknown/1=Bitmap/2=Metafile/3=...） */
+Status  GdipGetImageType(GpImage* image, int* type);
+
+/* 在 (x, y) 处按图像原始尺寸绘制 */
+Status  GdipDrawImage(GpGraphics* graphics, GpImage* image, float x, float y);
+
+/* 在 (x, y) 处绘制到指定尺寸 (w, h)（缩放） */
+Status  GdipDrawImageRect(GpGraphics* graphics, GpImage* image, float x, float y, float width, float height);
+
+/* 在目标矩形 (dx,dy,dw,dh) 绘制源矩形 (sx,sy,sw,sh) 的图像内容（裁剪 + 缩放） */
+Status  GdipDrawImageRectRect(GpGraphics* graphics, GpImage* image,
+    float dstx, float dsty, float dstwidth, float dstheight,
+    float srcx, float srcy, float srcwidth, float srcheight,
+    int srcUnit, void* imageAttributes, void* callback, void* callbackData);
 C;
 
     // ============================================================
@@ -890,6 +1493,82 @@ C;
     public function getGdiplus(): \FFI
     {
         return $this->gdiplus;
+    }
+
+    public function getComctl32(): \FFI
+    {
+        return $this->comctl32;
+    }
+
+    // ============================================================
+    // GDI+ 图像 → HBITMAP 转换（供 Button/Label/Tab/Table/MenuItem 使用）
+    // ============================================================
+
+    /**
+     * 将 GDI+ GpImage 转换为 HBITMAP（int 形式返回，跨作用域通用）。
+     *
+     * 内部流程：
+     *   1. 在 gdiplus 作用域调用 GdipCreateHBITMAPFromBitmap 生成 HBITMAP
+     *      （alpha 预乘到白色背景，避免透明区域变黑）。
+     *   2. 将 gdiplus 作用域的 void* 指针通过 INT_TO_PTR 转为 int 返回。
+     *
+     * 调用方负责通过 {@see deleteGdiObjectInt()} 在不再使用时 DeleteObject。
+     *
+     * @param \FFI\CData $gpImage gdiplus 作用域的 GpImage CData（由 Image::getGpImage() 提供）。
+     * @return int HBITMAP 指针的 int 表示，0 表示失败。
+     */
+    public function gdipImageToHbitmapInt(\FFI\CData $gpImage): int
+    {
+        $gp = $this->gdiplus;
+        // GpImage 与 GpBitmap 均为 void*，同作用域可直接 cast
+        $bitmap = $gp->cast('GpBitmap', $gpImage);
+        // void* 由 new() 自动初始化为 null
+        $hbm = $gp->new('void*');
+        // argbBackground=0x00FFFFFF（不透明白），让透明像素合成到白底
+        $status = (int) $gp->GdipCreateHBITMAPFromBitmap(
+            $bitmap,
+            \FFI::addr($hbm),
+            0x00FFFFFF
+        );
+        if ($status !== 0 || $hbm === null || \FFI::isNull($hbm)) {
+            return 0;
+        }
+        return $this->ptrToIntIn($gp, $hbm);
+    }
+
+    /**
+     * 通过 int 句柄 DeleteObject 释放 GDI 对象（HBITMAP/HBRUSH/HPEN/HFONT 等）。
+     *
+     * int 在 gdi32 作用域内通过 INT_TO_PTR 转回 HGDIOBJ 指针后调用 DeleteObject。
+     *
+     * @param int $hObj GDI 对象的 int 句柄。
+     */
+    public function deleteGdiObjectInt(int $hObj): void
+    {
+        if ($hObj === 0) {
+            return;
+        }
+        $obj = $this->intToPtrIn($this->gdi32, $hObj);
+        $this->gdi32->DeleteObject($obj);
+    }
+
+    /**
+     * 在 comctl32 作用域将 int 转为 HBITMAP CData（供 ImageList_Add 使用）。
+     *
+     * ImageList_Add 需要 comctl32 作用域的 HBITMAP，而 {@see gdipImageToHbitmapInt}
+     * 返回的 int 来自 gdiplus 作用域。本方法在 comctl32 作用域重建 HBITMAP 指针。
+     */
+    public function intToComctl32Bitmap(int $hbmInt): \FFI\CData
+    {
+        return $this->intToPtrIn($this->comctl32, $hbmInt);
+    }
+
+    /**
+     * 在 user32 作用域将 int 转为 HBITMAP CData（供 MENUITEMINFOW.hbmpItem 使用）。
+     */
+    public function intToUser32Bitmap(int $hbmInt): \FFI\CData
+    {
+        return $this->intToPtrIn($this->user32, $hbmInt);
     }
 
     // ============================================================
@@ -1067,10 +1746,11 @@ C;
             return;
         }
 
-        // 初始化通用控件（Trackbar/UpDown/ProgressBar 等）
+        // 初始化通用控件（Trackbar/UpDown/ProgressBar/Tab/DateTimePicker 等）
+        // 0x013F = ICC_LISTVIEW|ICC_TREEVIEW|ICC_BAR|ICC_TAB|ICC_UPDOWN|ICC_PROGRESS|ICC_DATE_CLASSES
         $icc = $this->comctl32->new('INITCOMMONCONTROLSEX');
         $icc->dwSize = 8;
-        $icc->dwICC = 0x003F; // ICC_ALL_CLASSES
+        $icc->dwICC = 0x013F;
         $this->comctl32->InitCommonControlsEx(\FFI::addr($icc));
 
         // WindowProc 闭包
@@ -1123,6 +1803,30 @@ C;
 
         if ($isWindow) {
             switch ($msg) {
+                case self::WM_MOVE:
+                    $window = $this->windows[$hwndInt] ?? null;
+                    if ($window !== null && $window->onPositionChanged !== null) {
+                        // lParam 低字=x 高字=y（屏幕坐标，已为客户端区域左上角）
+                        $x = $lParam & 0xFFFF;
+                        $y = ($lParam >> 16) & 0xFFFF;
+                        // 符号扩展为有符号 16 位（多显示器负坐标）
+                        if ($x >= 0x8000) {
+                            $x -= 0x10000;
+                        }
+                        if ($y >= 0x8000) {
+                            $y -= 0x10000;
+                        }
+                        try {
+                            ($window->onPositionChanged)(Point::of($x, $y));
+                        } catch (\Throwable $e) {
+                            trigger_error(
+                                'onPositionChanged callback error: ' . $e->getMessage(),
+                                \E_USER_WARNING
+                            );
+                        }
+                    }
+                    return 0;
+
                 case self::WM_SIZE:
                     $this->relayoutWindowNow($hwndInt);
                     // 同步滚动条 page 大小（客户区高度变化后更新 SCROLLINFO）
@@ -1169,6 +1873,11 @@ C;
                 case self::WM_DESTROY:
                     $this->unregisterWindow($hwndInt);
                     unset($this->windowScrollInfo[$hwndInt]);
+                    // 释放窗口自定义 Image 图标
+                    if (isset($this->windowImageIcons[$hwndInt])) {
+                        $this->destroyIconInt($this->windowImageIcons[$hwndInt]);
+                        unset($this->windowImageIcons[$hwndInt]);
+                    }
                     if ($this->windows === []) {
                         $this->user32->PostQuitMessage(0);
                     }
@@ -1182,6 +1891,14 @@ C;
                     return $this->dispatchScroll($hwndInt, $msg, $wParam, $lParam);
 
                 case self::WM_NOTIFY:
+                    // Table（ListView）通知优先处理：NM_CUSTOMDRAW 需要返回非 0 值
+                    $tableResult = $this->handleTableNotify($lParam);
+                    if ($tableResult !== null) {
+                        return $tableResult;
+                    }
+                    if ($this->dispatchWmNotify($lParam)) {
+                        return 0;
+                    }
                     return (int) $this->user32->DefWindowProcW($hwnd, $msg, $wParam, $lParam);
 
                 case self::WM_PAINT:
@@ -1197,6 +1914,11 @@ C;
                 case self::WM_KEYDOWN:
                 case self::WM_KEYUP:
                     return (int) $this->user32->DefWindowProcW($hwnd, $msg, $wParam, $lParam);
+
+                // 托盘图标回调消息（WM_APP = 0x8000）
+                case self::WM_TRAYICON:
+                    $this->handleTrayCallback($hwndInt, $wParam, $lParam);
+                    return 0;
 
                 default:
                     return (int) $this->user32->DefWindowProcW($hwnd, $msg, $wParam, $lParam);
@@ -1217,6 +1939,11 @@ C;
             return $this->dispatchWmCommand($hwndInt, $wParam, $lParam);
         }
 
+        // Container 也可能收到子控件（如 Tab）发来的 WM_NOTIFY 通知
+        if ($msg === self::WM_NOTIFY && $this->dispatchWmNotify($lParam)) {
+            return 0;
+        }
+
         return (int) $this->user32->DefWindowProcW($hwnd, $msg, $wParam, $lParam);
     }
 
@@ -1231,6 +1958,17 @@ C;
             case self::WM_PAINT:
                 $ctx = $this->drawContextCreate($hwndInt);
                 try {
+                    // 应用 Area 滚动偏移：在用户 onDraw 之前平移世界坐标系，
+                    // 使用户按内容坐标系（0,0 ~ w,h）绘制即可。
+                    $scroll = $this->areaScrollInfo[$hwndInt] ?? null;
+                    if ($scroll !== null && ($scroll['x'] > 0 || $scroll['y'] > 0)) {
+                        $this->gdiplus->GdipTranslateWorldTransform(
+                            $ctx->getGraphics(),
+                            (float) -$scroll['x'],
+                            (float) -$scroll['y'],
+                            0 // MatrixOrderPrepend
+                        );
+                    }
                     if ($area !== null && $area->onDraw !== null) {
                         try {
                             ($area->onDraw)($ctx);
@@ -1253,12 +1991,92 @@ C;
             case self::WM_RBUTTONUP:
             case self::WM_MBUTTONDOWN:
             case self::WM_MBUTTONUP:
-                $this->dispatchAreaMouse($area, $msg, $wParam, $lParam);
+                // 首次 mousemove：注册鼠标离开跟踪并触发 onMouseEnter
+                if (!($this->areaMouseTracking[$hwndInt] ?? false)) {
+                    $this->areaMouseTracking[$hwndInt] = true;
+                    $this->areaTrackMouseLeave($hwnd);
+                    if ($area !== null && $area->onMouseEnter !== null) {
+                        try {
+                            ($area->onMouseEnter)();
+                        } catch (\Throwable $e) {
+                            trigger_error(
+                                'onMouseEnter callback error: ' . $e->getMessage(),
+                                \E_USER_WARNING
+                            );
+                        }
+                    }
+                }
+                // 左键按下时让 Area 获得焦点，使其能收到键盘消息
+                if ($msg === self::WM_LBUTTONDOWN) {
+                    $this->user32->SetFocus($hwnd);
+                }
+                $this->dispatchAreaMouse($area, $msg, $wParam, $lParam, $hwndInt);
                 return 0;
+
+            case self::WM_MOUSELEAVE:
+                // 鼠标离开：触发 onMouseLeave 并清除跟踪状态
+                unset($this->areaMouseTracking[$hwndInt]);
+                if ($area !== null && $area->onMouseLeave !== null) {
+                    try {
+                        ($area->onMouseLeave)();
+                    } catch (\Throwable $e) {
+                        trigger_error(
+                            'onMouseLeave callback error: ' . $e->getMessage(),
+                            \E_USER_WARNING
+                        );
+                    }
+                }
+                return 0;
+
+            case self::WM_SIZE:
+                // Area 尺寸变化时刷新滚动条 page（避免 page>range 时显示无效滑块）
+                $info = $this->areaScrollInfo[$hwndInt] ?? null;
+                if ($info !== null) {
+                    $client = $this->controlClientSize($hwndInt);
+                    $h = $this->intToHwnd($hwndInt);
+                    // 夹取 x/y 到新范围
+                    $maxX = max(0, $info['w'] - $client['w']);
+                    $maxY = max(0, $info['h'] - $client['h']);
+                    $info['x'] = max(0, min($info['x'], $maxX));
+                    $info['y'] = max(0, min($info['y'], $maxY));
+                    $this->areaScrollInfo[$hwndInt] = $info;
+                    if ($info['w'] > 0) {
+                        $si = $this->buildScrollInfo(0, $info['w'], $client['w'], $info['x']);
+                        $this->user32->SetScrollInfo($h, self::SB_HORZ, \FFI::addr($si), 1);
+                    }
+                    if ($info['h'] > 0) {
+                        $si = $this->buildScrollInfo(0, $info['h'], $client['h'], $info['y']);
+                        $this->user32->SetScrollInfo($h, self::SB_VERT, \FFI::addr($si), 1);
+                    }
+                    $this->user32->InvalidateRect($h, null, 1);
+                }
+                return 0;
+
+            case self::WM_HSCROLL:
+            case self::WM_VSCROLL:
+                // Area 自身滚动条消息（lParam==0 表示窗口滚动条）。
+                // 走专用处理：更新 areaScrollInfo 的 x/y 并 Invalidate 重绘。
+                return $this->handleAreaScroll($hwndInt, $msg, $wParam);
 
             default:
                 return (int) $this->user32->DefWindowProcW($hwnd, $msg, $wParam, $lParam);
         }
+    }
+
+    /**
+     * 注册 WM_MOUSELEAVE 通知（TrackMouseEvent + TME_LEAVE）。
+     *
+     * 调用后当鼠标离开 Area 客户区时，系统会投递 WM_MOUSELEAVE 消息。
+     * 一次 TrackMouseEvent 只生效一次，触发后需重新注册。
+     */
+    private function areaTrackMouseLeave(\FFI\CData $hwnd): void
+    {
+        $tme = $this->user32->new('TRACKMOUSEEVENT');
+        $tme->cbSize = \FFI::sizeof($tme);
+        $tme->dwFlags = self::TME_LEAVE;
+        $tme->hwndTrack = $hwnd;
+        $tme->dwHoverTime = 0;
+        $this->user32->TrackMouseEvent(\FFI::addr($tme));
     }
 
     /**
@@ -1267,7 +2085,7 @@ C;
      * lParam 低字=x 高字=y（signed short，需符号扩展）。
      * wParam 的 MK_LBUTTON=0x0001/MK_RBUTTON=0x0002/MK_MBUTTON=0x0010。
      */
-    private function dispatchAreaMouse(?object $area, int $msg, int $wParam, int $lParam): void
+    private function dispatchAreaMouse(?object $area, int $msg, int $wParam, int $lParam, int $hwndInt = 0): void
     {
         if ($area === null) {
             return;
@@ -1280,6 +2098,16 @@ C;
         $y = ($lParam >> 16) & 0xFFFF;
         if ($y >= 0x8000) {
             $y -= 0x10000;
+        }
+
+        // Area 滚动偏移：客户端坐标 + scrollX/Y = 内容坐标
+        // 用户 onDraw 按内容坐标系绘制，鼠标坐标也统一为内容坐标系。
+        if ($hwndInt !== 0) {
+            $scroll = $this->areaScrollInfo[$hwndInt] ?? null;
+            if ($scroll !== null) {
+                $x += $scroll['x'];
+                $y += $scroll['y'];
+            }
         }
 
         // 修饰键：MK_SHIFT=0x0004, MK_CONTROL=0x0008
@@ -1349,28 +2177,47 @@ C;
      * WM_COMMAND 分发：
      *   - lParam != 0 → 控件通知（通过 lParam 反查控件实例）
      *   - lParam == 0 → 菜单命令，LOWORD(wParam) = 菜单项 ID
-     *     遍历窗口 Menu 的 items，findItemById 匹配，调 onClick。
+     *     先在窗口菜单栏（getMenu）查找；找不到再遍历所有 TrayIcon 的
+     *     contextMenu（托盘右键菜单不挂在窗口上，必须单独查找）。
      */
     private function dispatchWmCommand(int $hwndInt, int $wParam, int $lParam): int
     {
         if ($lParam === 0) {
             // 菜单/加速键命令
             $menuItemId = $wParam & 0xFFFF; // LOWORD(wParam)
+            $item = null;
+
+            // 1. 先在窗口菜单栏查找
             $window = $this->windows[$hwndInt] ?? null;
             if ($window !== null && method_exists($window, 'getMenu')) {
                 $menu = $window->getMenu();
                 if ($menu !== null) {
                     $item = $menu->findItemById($menuItemId);
-                    if ($item !== null && $item->onClick !== null) {
-                        try {
-                            ($item->onClick)();
-                        } catch (\Throwable $e) {
-                            trigger_error(
-                                'menu onClick callback error: ' . $e->getMessage(),
-                                \E_USER_WARNING
-                            );
-                        }
+                }
+            }
+
+            // 2. 菜单栏找不到，遍历所有 TrayIcon 的右键上下文菜单
+            if ($item === null) {
+                foreach ($this->trayIcons as $tray) {
+                    $ctxMenu = $tray->getContextMenu();
+                    if ($ctxMenu === null) {
+                        continue;
                     }
+                    $item = $ctxMenu->findItemById($menuItemId);
+                    if ($item !== null) {
+                        break;
+                    }
+                }
+            }
+
+            if ($item !== null && $item->onClick !== null) {
+                try {
+                    ($item->onClick)();
+                } catch (\Throwable $e) {
+                    trigger_error(
+                        'menu onClick callback error: ' . $e->getMessage(),
+                        \E_USER_WARNING
+                    );
                 }
             }
             return 0;
@@ -1420,8 +2267,540 @@ C;
                     );
                 }
             }
+        } elseif ($notification === self::CBN_EDITCHANGE) {
+            // EditableComboBox 编辑框文本变化
+            if (property_exists($control, 'onChange') && $control->onChange !== null) {
+                try {
+                    ($control->onChange)();
+                } catch (\Throwable $e) {
+                    trigger_error(
+                        'onChange callback error: ' . $e->getMessage(),
+                        \E_USER_WARNING
+                    );
+                }
+            }
         }
         return 0;
+    }
+
+    /**
+     * WM_NOTIFY 分发：处理 Tab 控件 TCN_SELCHANGE 等通知。
+     *
+     * lParam 指向 NMHDR 结构：hwndFrom（发送通知的控件 HWND）、
+     * idFrom（控件 ID）、code（通知码）。
+     *
+     * @return bool true 表示已处理，调用方应返回 0。
+     */
+    private function dispatchWmNotify(int $lParam): bool
+    {
+        if ($lParam === 0) {
+            return false;
+        }
+        // int → user32 作用域指针 → NMHDR*
+        $caster = $this->user32->new('INT_TO_PTR');
+        $caster->i = $lParam;
+        $nmhdr = $this->user32->cast('NMHDR*', $caster->p);
+
+        $fromHwnd = $this->hwndInt($nmhdr->hwndFrom);
+        // NMHDR.code 是 UINT，负通知码需转有符号 32 位
+        $code = (int) $nmhdr->code;
+        if ($code > 0x7FFFFFFF) {
+            $code -= 0x100000000;
+        }
+
+        if ($code === self::TCN_SELCHANGE) {
+            $control = $this->controls[$fromHwnd] ?? null;
+            if ($control !== null && method_exists($control, 'handleSelChanged')) {
+                try {
+                    $control->handleSelChanged();
+                } catch (\Throwable $e) {
+                    trigger_error(
+                        'handleSelChanged error: ' . $e->getMessage(),
+                        \E_USER_WARNING
+                    );
+                }
+                return true;
+            }
+        }
+
+        // DateTimePicker 日期时间变化通知
+        // NMDATETIMECHANGE = { NMHDR nmhdr; DWORD dwFlags; SYSTEMTIME st; }
+        // nmhdr 之后紧跟 dwFlags，再跟 SYSTEMTIME（8 个 WORD）
+        if ($code === self::DTN_DATETIMECHANGE) {
+            $control = $this->controls[$fromHwnd] ?? null;
+            if ($control !== null && method_exists($control, 'handleDateTimeChange')) {
+                try {
+                    $control->handleDateTimeChange();
+                } catch (\Throwable $e) {
+                    trigger_error(
+                        'handleDateTimeChange error: ' . $e->getMessage(),
+                        \E_USER_WARNING
+                    );
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 处理 Table（ListView）的 WM_NOTIFY 通知。
+     *
+     * 覆盖以下通知码：
+     *   - LVN_GETDISPINFO（-177）：虚拟模式按需取数据，调用 model->getCellValue
+     *     填充 LVITEMW.pszText。
+     *   - LVN_ITEMCHANGED（-101）：选中行变化，触发 onSelectionChanged。
+     *   - NM_DBLCLK（-3）：双击行，触发 onRowDoubleClicked。
+     *   - NM_CUSTOMDRAW（-12）：自绘，应用 setRowBgColor/setRowTextColor。
+     *
+     * @param int $lParam WM_NOTIFY 的 lParam（NMHDR* 指针的 int 表示）。
+     * @return int|null 非 null 表示已处理（值为返回给系统的 LRESULT）；
+     *                  null 表示未处理，调用方继续走 dispatchWmNotify。
+     */
+    private function handleTableNotify(int $lParam): ?int
+    {
+        if ($lParam === 0) {
+            return null;
+        }
+
+        // int → user32 作用域指针 → NMHDR*
+        $caster = $this->user32->new('INT_TO_PTR');
+        $caster->i = $lParam;
+        $nmhdr = $this->user32->cast('NMHDR*', $caster->p);
+
+        $fromHwnd = $this->hwndInt($nmhdr->hwndFrom);
+        $code = (int) $nmhdr->code;
+        if ($code > 0x7FFFFFFF) {
+            $code -= 0x100000000;
+        }
+
+        // 仅处理 ListView（Table 控件）的通知
+        $control = $this->controls[$fromHwnd] ?? null;
+        if ($control === null || !($control instanceof \Kingbes\Ui\Control\Table)) {
+            return null;
+        }
+        $model = $control->getModel();
+        if ($model === null) {
+            return null;
+        }
+
+        // LVN_GETDISPINFO：虚拟模式按需取数据
+        if ($code === self::LVN_GETDISPINFOW) {
+            // lParam 指向 NMLVDISPINFO（NMHDR + LVITEMW）
+            $dispInfo = $this->user32->cast('NMLVDISPINFO*', $caster->p);
+            $item = $dispInfo->item;
+            $mask = (int) $item->mask;
+            $row = (int) $item->iItem;
+            $col = (int) $item->iSubItem;
+
+            if (($mask & self::LVIF_TEXT) !== 0) {
+                $text = $model->getCellValue($row, $col);
+
+                // 写入 pszText 缓冲（pszText 由控件分配，cchTextMax 为容量）
+                $textWide = mb_convert_encoding($text, 'UTF-16LE', 'UTF-8');
+                $textChars = intdiv(strlen($textWide), 2);
+                $maxChars = (int) $item->cchTextMax;
+                $writeChars = min($textChars, max(0, $maxChars - 1));
+
+                // pszText 是 wchar_t* 指针，需 cast 后写入
+                $pszTextPtr = $item->pszText;
+                if ($pszTextPtr !== null && \FFI::isNull($pszTextPtr) === false && $writeChars >= 0) {
+                    // 直接按 wchar_t* 写入
+                    $wcharArr = $this->user32->cast('wchar_t*', $pszTextPtr);
+                    for ($i = 0; $i < $writeChars; $i++) {
+                        $wcharArr[$i] = ord($textWide[$i * 2]) | (ord($textWide[$i * 2 + 1]) << 8);
+                    }
+                    $wcharArr[$writeChars] = 0;
+                }
+            }
+
+            // LVIF_IMAGE：图像列。委托 Table::resolveCellImage 获取图像索引。
+            // -1 表示该单元格无图像（ListView 不绘制图标）。
+            if (($mask & self::LVIF_IMAGE) !== 0) {
+                $imageIndex = -1;
+                if (method_exists($control, 'resolveCellImage')) {
+                    try {
+                        $imageIndex = (int) $control->resolveCellImage($row, $col);
+                    } catch (\Throwable $e) {
+                        trigger_error(
+                            'resolveCellImage error: ' . $e->getMessage(),
+                            \E_USER_WARNING
+                        );
+                    }
+                }
+                $item->iImage = $imageIndex;
+            }
+            return 0;
+        }
+
+        // LVN_ITEMCHANGED：选中行变化
+        if ($code === self::LVN_ITEMCHANGED) {
+            $nmlv = $this->user32->cast('NMLISTVIEW*', $caster->p);
+            // 仅当 LVIS_SELECTED 状态变化时触发
+            $newState = (int) $nmlv->uNewState;
+            $oldState = (int) $nmlv->uOldState;
+            $newSel = ($newState & self::LVIS_SELECTED) !== 0;
+            $oldSel = ($oldState & self::LVIS_SELECTED) !== 0;
+            if ($newSel !== $oldSel) {
+                $row = (int) $nmlv->iItem;
+                $selRow = $newSel ? $row : -1;
+                if (method_exists($control, 'handleSelectionChanged')) {
+                    try {
+                        $control->handleSelectionChanged($selRow);
+                    } catch (\Throwable $e) {
+                        trigger_error(
+                            'handleSelectionChanged error: ' . $e->getMessage(),
+                            \E_USER_WARNING
+                        );
+                    }
+                }
+            }
+            return 0;
+        }
+
+        // NM_DBLCLK：双击行
+        if ($code === self::NM_DBLCLK) {
+            $row = $this->tableGetSelectedRow($fromHwnd);
+            if ($row >= 0 && method_exists($control, 'handleRowDoubleClicked')) {
+                try {
+                    $control->handleRowDoubleClicked($row);
+                } catch (\Throwable $e) {
+                    trigger_error(
+                        'handleRowDoubleClicked error: ' . $e->getMessage(),
+                        \E_USER_WARNING
+                    );
+                }
+            }
+            return 0;
+        }
+
+        // NM_CLICK：单击命中 checkbox/button 列时触发对应回调
+        if ($code === self::NM_CLICK) {
+            $this->handleTableClick($control, $fromHwnd);
+            return 0;
+        }
+
+        // NM_CUSTOMDRAW：行级背景色/文字色
+        if ($code === self::NM_CUSTOMDRAW) {
+            return $this->handleTableCustomDraw($control, $lParam, $caster);
+        }
+
+        return null;
+    }
+
+    /**
+     * 处理 Table 的 NM_CUSTOMDRAW 通知（行级着色 + 单元格自绘）。
+     *
+     * 流程：
+     *   1. CDDS_PREPAINT 阶段返回 CDRF_NOTIFYITEMDRAW，请求逐项通知。
+     *   2. CDDS_ITEMPREPAINT 阶段查表设置 clrTextBk/clrText，并请求子项通知。
+     *   3. CDDS_SUBITEM | CDDS_ITEMPREPAINT 阶段：根据列类型自绘
+     *      checkbox/progress/color/button，返回 CDRF_SKIPDEFAULT 跳过系统默认绘制。
+     *      文本/图像列返回 CDRF_DODEFAULT 由系统绘制。
+     *
+     * @param \Kingbes\Ui\Control\Table $control Table 控件实例。
+     * @param int                       $lParam  NMLVCUSTOMDRAW* 的 int 表示。
+     * @param \FFI\CData                $caster  已绑定的 INT_TO_PTR 联合体（含 lParam 指针）。
+     * @return int LRESULT 返回值（CDRF_XXX）。
+     */
+    private function handleTableCustomDraw(
+        \Kingbes\Ui\Control\Table $control,
+        int $lParam,
+        \FFI\CData $caster
+    ): int {
+        $nmlvcd = $this->user32->cast('NMLVCUSTOMDRAW*', $caster->p);
+        $stage = (int) $nmlvcd->dwDrawStage;
+
+        if ($stage === self::CDDS_PREPAINT) {
+            return self::CDRF_NOTIFYITEMDRAW;
+        }
+
+        if (($stage & self::CDDS_ITEMPREPAINT) === self::CDDS_ITEMPREPAINT
+            && ($stage & self::CDDS_SUBITEM) === 0
+        ) {
+            $row = (int) $nmlvcd->dwItemSpec;
+            $hwnd = $control->getHwnd();
+
+            // 应用背景色
+            $bgColor = $this->tableRowBgColors[$hwnd][$row] ?? null;
+            if ($bgColor !== null) {
+                $nmlvcd->clrTextBk = $bgColor;
+            }
+
+            // 应用文字色
+            $textColor = $this->tableRowTextColors[$hwnd][$row] ?? null;
+            if ($textColor !== null) {
+                $nmlvcd->clrText = $textColor;
+            }
+
+            // 请求子项绘制通知（CDDS_SUBITEM 阶段）
+            return self::CDRF_NOTIFYSUBITEMDRAW;
+        }
+
+        // CDDS_SUBITEM | CDDS_ITEMPREPAINT：每列自绘
+        if (($stage & self::CDDS_SUBITEM) === self::CDDS_SUBITEM) {
+            $row = (int) $nmlvcd->dwItemSpec;
+            $col = (int) $nmlvcd->iSubItem;
+            $type = $control->getColumnType($col);
+
+            // 文本/图像列：交给系统绘制
+            if ($type === Table::TYPE_TEXT || $type === Table::TYPE_IMAGE) {
+                return self::CDRF_DODEFAULT;
+            }
+
+            // 自绘 checkbox/progress/color/button
+            $hdc = $nmlvcd->hdc;
+            $rc = $nmlvcd->rc;
+            try {
+                $this->drawTableCell($control, $type, $row, $col, $hdc, $rc);
+            } catch (\Throwable $e) {
+                trigger_error(
+                    'drawTableCell error: ' . $e->getMessage(),
+                    \E_USER_WARNING
+                );
+            }
+            return self::CDRF_SKIPDEFAULT;
+        }
+
+        return self::CDRF_DODEFAULT;
+    }
+
+    /**
+     * 自绘 Table 单元格（checkbox/progress/color/button）。
+     *
+     * @param Table     $control Table 实例。
+     * @param string    $type    列类型（TYPE_CHECKBOX/PROGRESS/COLOR/BUTTON）。
+     * @param int       $row     行索引。
+     * @param int       $col     列索引。
+     * @param \FFI\CData $hdc    设备上下文（user32 作用域 HDC）。
+     * @param \FFI\CData $rc     单元格矩形（user32 作用域 RECT）。
+     */
+    private function drawTableCell(
+        \Kingbes\Ui\Control\Table $control,
+        string $type,
+        int $row,
+        int $col,
+        \FFI\CData $hdc,
+        \FFI\CData $rc
+    ): void {
+        switch ($type) {
+            case Table::TYPE_CHECKBOX:
+                $checked = $control->resolveCellCheckbox($row, $col) ?? false;
+                $this->drawCellCheckbox($hdc, $rc, $checked);
+                break;
+            case Table::TYPE_PROGRESS:
+                $value = $control->resolveCellProgress($row, $col) ?? 0;
+                $this->drawCellProgress($hdc, $rc, $value);
+                break;
+            case Table::TYPE_COLOR:
+                $color = $control->resolveCellColor($row, $col);
+                $this->drawCellColor($hdc, $rc, $color);
+                break;
+            case Table::TYPE_BUTTON:
+                $text = $control->resolveCellButton($row, $col);
+                $this->drawCellButton($hdc, $rc, $text);
+                break;
+        }
+    }
+
+    /**
+     * 绘制 checkbox 单元格（DrawFrameControl DFC_BUTTON | DFCS_BUTTONCHECK）。
+     */
+    private function drawCellCheckbox(\FFI\CData $hdc, \FFI\CData $rc, bool $checked): void
+    {
+        // checkbox 尺寸 16x16，垂直居中，左侧留 4px 间距
+        $cx = 16;
+        $cy = 16;
+        $left = (int) $rc->left + 4;
+        $top = (int) $rc->top + (((int) $rc->bottom - (int) $rc->top) - $cy) / 2;
+
+        $cbRect = $this->user32->new('RECT');
+        $cbRect->left = $left;
+        $cbRect->top = $top;
+        $cbRect->right = $left + $cx;
+        $cbRect->bottom = $top + $cy;
+
+        $state = self::DFCS_BUTTONCHECK | ($checked ? self::DFCS_CHECKED : 0);
+        $this->user32->DrawFrameControl($hdc, \FFI::addr($cbRect), self::DFC_BUTTON, $state);
+    }
+
+    /**
+     * 绘制进度条单元格（DrawEdge 边框 + FillRect 填充进度）。
+     */
+    private function drawCellProgress(\FFI\CData $hdc, \FFI\CData $rc, int $value): void
+    {
+        $value = max(0, min(100, $value));
+        $left = (int) $rc->left + 4;
+        $right = (int) $rc->right - 4;
+        $top = (int) $rc->top + 4;
+        $bottom = (int) $rc->bottom - 4;
+        $w = $right - $left;
+        $h = $bottom - $top;
+        if ($w <= 0 || $h <= 0) {
+            return;
+        }
+
+        // 外框
+        $frameRect = $this->user32->new('RECT');
+        $frameRect->left = $left;
+        $frameRect->top = $top;
+        $frameRect->right = $right;
+        $frameRect->bottom = $bottom;
+        $this->user32->DrawEdge($hdc, \FFI::addr($frameRect), self::EDGE_SUNKEN, self::BF_RECT);
+
+        // 进度填充
+        $fillW = (int) ($w * $value / 100);
+        if ($fillW > 0) {
+            $fillRect = $this->user32->new('RECT');
+            $fillRect->left = $left + 2;
+            $fillRect->top = $top + 2;
+            $fillRect->right = $left + 2 + $fillW;
+            $fillRect->bottom = $bottom - 2;
+            $hbr = $this->user32->GetSysColorBrush(self::COLOR_HIGHLIGHT);
+            $this->user32->FillRect($hdc, \FFI::addr($fillRect), $hbr);
+        }
+    }
+
+    /**
+     * 绘制颜色块单元格（CreateSolidBrush + FillRect）。
+     */
+    private function drawCellColor(\FFI\CData $hdc, \FFI\CData $rc, ?\Kingbes\Ui\Graphics\Color $color): void
+    {
+        $left = (int) $rc->left + 4;
+        $right = (int) $rc->right - 4;
+        $top = (int) $rc->top + 4;
+        $bottom = (int) $rc->bottom - 4;
+        if ($right - $left <= 0 || $bottom - $top <= 0) {
+            return;
+        }
+
+        $blockRect = $this->user32->new('RECT');
+        $blockRect->left = $left;
+        $blockRect->top = $top;
+        $blockRect->right = $right;
+        $blockRect->bottom = $bottom;
+
+        // 颜色：null 用灰色，否则 RGB
+        if ($color !== null) {
+            $rgb = ($color->r & 0xFF) | (($color->g & 0xFF) << 8) | (($color->b & 0xFF) << 16);
+        } else {
+            $rgb = 0x808080;
+        }
+        $hbr = $this->user32->CreateSolidBrush($rgb);
+        try {
+            $this->user32->FillRect($hdc, \FFI::addr($blockRect), $hbr);
+            // 边框
+            $this->user32->DrawEdge($hdc, \FFI::addr($blockRect), self::EDGE_SUNKEN, self::BF_RECT);
+        } finally {
+            $this->user32->DeleteObject($hbr);
+        }
+    }
+
+    /**
+     * 绘制按钮单元格（DrawFrameControl DFC_BUTTON | DFCS_BUTTONPUSH + DrawTextW 居中文本）。
+     */
+    private function drawCellButton(\FFI\CData $hdc, \FFI\CData $rc, string $text): void
+    {
+        $left = (int) $rc->left + 4;
+        $right = (int) $rc->right - 4;
+        $top = (int) $rc->top + 3;
+        $bottom = (int) $rc->bottom - 3;
+        if ($right - $left <= 0 || $bottom - $top <= 0) {
+            return;
+        }
+
+        $btnRect = $this->user32->new('RECT');
+        $btnRect->left = $left;
+        $btnRect->top = $top;
+        $btnRect->right = $right;
+        $btnRect->bottom = $bottom;
+        $this->user32->DrawFrameControl($hdc, \FFI::addr($btnRect), self::DFC_BUTTON, self::DFCS_BUTTONPUSH | self::DFCS_FLAT);
+
+        if ($text !== '') {
+            // UTF-8 → UTF-16LE 写入 wchar_t 缓冲
+            $wide = mb_convert_encoding($text, 'UTF-16LE', 'UTF-8');
+            $chars = intdiv(strlen($wide), 2);
+            $buf = $this->user32->new('wchar_t[' . ($chars + 1) . ']');
+            for ($i = 0; $i < $chars; $i++) {
+                $buf[$i] = ord($wide[$i * 2]) | (ord($wide[$i * 2 + 1]) << 8);
+            }
+            $buf[$chars] = 0;
+
+            // 文本居中
+            $this->user32->SetBkMode($hdc, 1); // TRANSPARENT
+            $this->user32->DrawTextW(
+                $hdc,
+                \FFI::addr($buf[0]),
+                $chars,
+                \FFI::addr($btnRect),
+                self::DT_CENTER | self::DT_VCENTER | self::DT_SINGLELINE
+            );
+        }
+    }
+
+    /**
+     * 处理 Table 的 NM_CLICK 通知：命中测试 + 触发 checkbox/button 回调。
+     *
+     * 通过 GetMessagePos 获取屏幕坐标，ScreenToClient 转为客户区坐标，
+     * LVM_SUBITEMHITTEST 命中测试得到行/列，根据列类型触发对应回调。
+     */
+    private function handleTableClick(\Kingbes\Ui\Control\Table $control, \FFI\CData $fromHwnd): void
+    {
+        // GetMessagePos 返回屏幕坐标（低字 x，高字 y，16 位有符号）
+        $pos = $this->user32->GetMessagePos();
+        $x = ($pos & 0xFFFF);
+        $y = (($pos >> 16) & 0xFFFF);
+        // 符号扩展（多显示器负坐标）
+        if ($x >= 0x8000) { $x -= 0x10000; }
+        if ($y >= 0x8000) { $y -= 0x10000; }
+
+        $pt = $this->user32->new('POINT');
+        $pt->x = $x;
+        $pt->y = $y;
+        $this->user32->ScreenToClient($fromHwnd, \FFI::addr($pt));
+
+        $hti = $this->user32->new('LVHITTESTINFO');
+        $hti->pt = $pt;
+        $hti->flags = 0;
+        $hti->iItem = -1;
+        $hti->iSubItem = -1;
+        $hti->iGroup = -1;
+
+        $ret = (int) $this->user32->SendMessageW(
+            $fromHwnd,
+            self::LVM_SUBITEMHITTEST,
+            0,
+            \FFI::addr($hti)
+        );
+        if ($ret < 0) {
+            return;
+        }
+        $row = (int) $hti->iItem;
+        $col = (int) $hti->iSubItem;
+        if ($row < 0 || $col < 0) {
+            return;
+        }
+
+        $type = $control->getColumnType($col);
+        if ($type === Table::TYPE_CHECKBOX) {
+            try {
+                $control->handleCellCheckboxToggle($row, $col);
+            } catch (\Throwable $e) {
+                trigger_error(
+                    'handleCellCheckboxToggle error: ' . $e->getMessage(),
+                    \E_USER_WARNING
+                );
+            }
+        } elseif ($type === Table::TYPE_BUTTON) {
+            try {
+                $control->handleCellButtonClick($row, $col);
+            } catch (\Throwable $e) {
+                trigger_error(
+                    'handleCellButtonClick error: ' . $e->getMessage(),
+                    \E_USER_WARNING
+                );
+            }
+        }
     }
 
     /**
@@ -1445,19 +2824,127 @@ C;
         if ($lParam === 0) {
             return 0; // 其他标准滚动条（如 WM_HSCROLL 窗口水平条），忽略
         }
-        // 控件滚动条：Slider onChanged
+        // 控件滚动条：Slider onChanged / onReleased
         $notification = $wParam & 0xFFFF;
         $control = $this->controls[$lParam] ?? null;
-        if ($control !== null && property_exists($control, 'onChanged') && $control->onChanged !== null) {
-            try {
-                ($control->onChanged)();
-            } catch (\Throwable $e) {
-                trigger_error(
-                    'onChanged callback error: ' . $e->getMessage(),
-                    \E_USER_WARNING
-                );
+        if ($control !== null) {
+            // SB_ENDSCROLL：拖动/操作结束，触发 onReleased
+            if ($notification === self::SB_ENDSCROLL
+                && property_exists($control, 'onReleased')
+                && $control->onReleased !== null
+            ) {
+                try {
+                    ($control->onReleased)();
+                } catch (\Throwable $e) {
+                    trigger_error(
+                        'onReleased callback error: ' . $e->getMessage(),
+                        \E_USER_WARNING
+                    );
+                }
+                return 0;
+            }
+            // 其他通知：值变化，触发 onChanged
+            if (property_exists($control, 'onChanged') && $control->onChanged !== null) {
+                try {
+                    ($control->onChanged)();
+                } catch (\Throwable $e) {
+                    trigger_error(
+                        'onChanged callback error: ' . $e->getMessage(),
+                        \E_USER_WARNING
+                    );
+                }
             }
         }
+        return 0;
+    }
+
+    /**
+     * 处理 Area 滚动条 WM_HSCROLL/WM_VSCROLL：更新 x/y 偏移并重绘。
+     *
+     * 与窗口滚动不同，Area 不重新布局（内容是用户在 onDraw 中按内容坐标系
+     * 绘制的），只需更新 areaScrollInfo 的 x/y 并 Invalidate 触发重绘，
+     * WM_PAINT 时由 GdipTranslateWorldTransform(-x, -y) 应用偏移。
+     *
+     * @param int $hwndInt Area 控件句柄。
+     * @param int $msg     WM_HSCROLL 或 WM_VSCROLL。
+     * @param int $wParam  滚动消息的 wParam（低字=通知码，高字=thumb 位置）。
+     * @return int 始终返回 0（已处理）。
+     */
+    private function handleAreaScroll(int $hwndInt, int $msg, int $wParam): int
+    {
+        $info = $this->areaScrollInfo[$hwndInt] ?? null;
+        if ($info === null) {
+            return 0;
+        }
+        $notification = $wParam & 0xFFFF;
+        $client = $this->controlClientSize($hwndInt);
+
+        $isVert = ($msg === self::WM_VSCROLL);
+        $contentSize = $isVert ? $info['h'] : $info['w'];
+        $page = max(1, $isVert ? $client['h'] : $client['w']);
+        $maxPos = max(0, $contentSize - ($isVert ? $client['h'] : $client['w']));
+        $oldPos = $isVert ? $info['y'] : $info['x'];
+        $newPos = $oldPos;
+
+        switch ($notification) {
+            case self::SB_LINEUP:
+                $newPos = $oldPos - 16;
+                break;
+            case self::SB_LINEDOWN:
+                $newPos = $oldPos + 16;
+                break;
+            case self::SB_PAGEUP:
+                $newPos = $oldPos - $page;
+                break;
+            case self::SB_PAGEDOWN:
+                $newPos = $oldPos + $page;
+                break;
+            case self::SB_THUMBTRACK:
+            case self::SB_THUMBPOSITION:
+                // 高字为 thumb 位置（16 位有符号）
+                $newPos = ($wParam >> 16) & 0xFFFF;
+                if ($newPos >= 0x8000) {
+                    $newPos -= 0x10000;
+                }
+                break;
+            case self::SB_TOP:
+                $newPos = 0;
+                break;
+            case self::SB_BOTTOM:
+                $newPos = $maxPos;
+                break;
+            case self::SB_ENDSCROLL:
+                // 拖动/操作结束，无位置变化
+                return 0;
+        }
+
+        $newPos = max(0, min($newPos, $maxPos));
+        if ($newPos === $oldPos) {
+            return 0;
+        }
+
+        if ($isVert) {
+            $info['y'] = $newPos;
+        } else {
+            $info['x'] = $newPos;
+        }
+        $this->areaScrollInfo[$hwndInt] = $info;
+
+        // 更新滚动条滑块位置
+        $h = $this->intToHwnd($hwndInt);
+        $si = $this->user32->new('SCROLLINFO');
+        $si->cbSize = \FFI::sizeof($si);
+        $si->fMask = self::SIF_POS;
+        $si->nPos = $newPos;
+        $this->user32->SetScrollInfo(
+            $h,
+            $isVert ? self::SB_VERT : self::SB_HORZ,
+            \FFI::addr($si),
+            1
+        );
+
+        // 触发重绘（应用新的滚动偏移）
+        $this->user32->InvalidateRect($h, null, 1);
         return 0;
     }
 
@@ -1828,39 +3315,46 @@ C;
         $size = $this->windowGetClientSize($hwnd);
         $info = $this->windowScrollInfo[$hwnd] ?? null;
 
+        // 窗口内边距（Window::getMargined）。若窗口未设置该方法则视为 0。
+        $margin = method_exists($window, 'getMargined') ? (int) $window->getMargined() : 0;
+        $margin = max(0, $margin);
+
         // 关键：先设置顶层 Container 自身的位置和尺寸到 Window 客户区。
         // controlCreate 创建 Container 时初始尺寸为 0x0，若不显式设置，
         // 子控件虽在 layout 中被 setBounds 到 Container 客户区坐标，
         // 但 Container 客户区为 0x0 会裁剪掉所有子控件，导致窗口空白。
+        //
+        // margined：将 Container 位置偏移到 (margin, margin)，尺寸收缩
+        // 2*margin，使子控件与窗口边框保持视觉间距。
         $containerHwnd = $container->getHwnd();
         if ($containerHwnd !== 0) {
             if ($info === null) {
                 $this->controlSetBounds(
                     $containerHwnd,
-                    0,
-                    0,
-                    $size->width,
-                    $size->height
+                    $margin,
+                    $margin,
+                    max(0, $size->width - 2 * $margin),
+                    max(0, $size->height - 2 * $margin)
                 );
             } else {
-                // 有滚动：将容器自身位置偏移到 (0, -scrollPos)，高度设为 contentHeight；
-                // layout() 在容器内部坐标系内排布子控件（0, 0, w, contentHeight）。
+                // 有滚动：将容器自身位置偏移到 (margin, margin-scrollPos)，
+                // 宽度收缩 2*margin，高度设为 contentHeight-2*margin。
                 $this->controlSetBounds(
                     $containerHwnd,
-                    0,
-                    -$info['scrollPos'],
-                    $size->width,
-                    $info['contentHeight']
+                    $margin,
+                    $margin - $info['scrollPos'],
+                    max(0, $size->width - 2 * $margin),
+                    max(0, $info['contentHeight'] - 2 * $margin)
                 );
             }
         }
 
         if ($info === null) {
             // 无滚动：默认布局
-            $container->layout(0, 0, $size->width, $size->height);
+            $container->layout(0, 0, max(0, $size->width - 2 * $margin), max(0, $size->height - 2 * $margin));
             return;
         }
-        $container->layout(0, 0, $size->width, $info['contentHeight']);
+        $container->layout(0, 0, max(0, $size->width - 2 * $margin), max(0, $info['contentHeight'] - 2 * $margin));
     }
 
     public function windowIsFocused(int $hwnd): bool
@@ -1884,6 +3378,325 @@ C;
         $this->user32->DrawMenuBar($this->intToHwnd($hwnd));
         // SWP_NOSIZE 抑制 WM_SIZE，需异步触发重布局以适应菜单栏占用的客户区变化
         $this->triggerRelayout($hwnd);
+    }
+
+    /**
+     * 从 .ico 文件加载窗口图标（大图标 + 小图标）。
+     */
+    public function windowSetIconFromFile(int $hwnd, string $file): void
+    {
+        if (!is_file($file)) {
+            trigger_error('Icon file not found: ' . $file, \E_USER_WARNING);
+            return;
+        }
+        $hiconLarge = $this->loadIconFromFile($file, 0, 0);  // 0=原始尺寸
+        $hiconSmall = $this->loadIconFromFile($file, 16, 16);
+        $hwndC = $this->intToHwnd($hwnd);
+        if ($hiconLarge !== 0) {
+            $this->user32->SendMessageW($hwndC, self::WM_SETICON, self::ICON_BIG, $hiconLarge);
+        }
+        if ($hiconSmall !== 0) {
+            $this->user32->SendMessageW($hwndC, self::WM_SETICON, self::ICON_SMALL, $hiconSmall);
+        }
+        // 触发重绘
+        $this->user32->SetWindowPos(
+            $hwndC, null, 0, 0, 0, 0,
+            self::SWP_FRAMECHANGED | self::SWP_NOMOVE | self::SWP_NOSIZE | self::SWP_NOZORDER
+        );
+        // loadIconFromFile 已返回 int 句柄，无需额外释放（系统图标共享，文件图标由系统管理）
+    }
+
+    /**
+     * 设置窗口图标为预定义系统图标。
+     */
+    public function windowSetIconFromId(int $hwnd, int $iconId): void
+    {
+        $hicon = $this->user32->LoadIconW(null, $iconId);
+        if ($hicon === null || \FFI::isNull($hicon)) {
+            return;
+        }
+        // HICON CData → int（SendMessageW 的 wParam/lParam 为 long long 标量）
+        $hiconInt = $this->ptrToInt($hicon);
+        $hwndC = $this->intToHwnd($hwnd);
+        // 系统图标同时用于大/小
+        $this->user32->SendMessageW($hwndC, self::WM_SETICON, self::ICON_BIG, $hiconInt);
+        $this->user32->SendMessageW($hwndC, self::WM_SETICON, self::ICON_SMALL, $hiconInt);
+        $this->user32->SetWindowPos(
+            $hwndC, null, 0, 0, 0, 0,
+            self::SWP_FRAMECHANGED | self::SWP_NOMOVE | self::SWP_NOSIZE | self::SWP_NOZORDER
+        );
+    }
+
+    /**
+     * 从 Image 对象设置窗口图标（PNG/JPEG/BMP/GIF/TIFF 任意 GDI+ 格式）。
+     *
+     * 内部调用 iconCreateFromImage 生成 HICON，然后用 WM_SETICON
+     * 同时设置 ICON_BIG 和 ICON_SMALL。HICON 由窗口持有，
+     * 下次调用前 / 窗口销毁时调用 destroyIconInt 释放。
+     */
+    public function windowSetIconFromImage(int $hwnd, object $image): void
+    {
+        $hiconInt = $this->iconCreateFromImage($image);
+        if ($hiconInt === 0) {
+            return;
+        }
+        $hwndC = $this->intToHwnd($hwnd);
+        // 先释放上次 Image 图标（若有）
+        if (isset($this->windowImageIcons[$hwnd])) {
+            $this->destroyIconInt($this->windowImageIcons[$hwnd]);
+        }
+        $this->windowImageIcons[$hwnd] = $hiconInt;
+
+        $this->user32->SendMessageW($hwndC, self::WM_SETICON, self::ICON_BIG, $hiconInt);
+        $this->user32->SendMessageW($hwndC, self::WM_SETICON, self::ICON_SMALL, $hiconInt);
+        $this->user32->SetWindowPos(
+            $hwndC, null, 0, 0, 0, 0,
+            self::SWP_FRAMECHANGED | self::SWP_NOMOVE | self::SWP_NOSIZE | self::SWP_NOZORDER
+        );
+    }
+
+    // ============================================================
+    // 系统托盘（Shell_NotifyIconW）
+    // ============================================================
+
+    public function registerTrayIcon(TrayIcon $tray): void
+    {
+        $id = $this->nextTrayId++;
+        $tray->_setTrayId($id);
+        $this->trayIcons[$id] = $tray;
+    }
+
+    public function unregisterTrayIcon(TrayIcon $tray): void
+    {
+        $id = $tray->getTrayId();
+        unset($this->trayIcons[$id]);
+    }
+
+    public function trayAdd(int $hwnd, int $trayId, int $hiconInt, string $tooltip): void
+    {
+        $nid = $this->shell32->new('NOTIFYICONDATAW');
+        $nid->cbSize = \FFI::sizeof($nid);
+        $nid->hWnd = $this->intToShellHwnd($hwnd);
+        $nid->uID = $trayId;
+        $nid->uFlags = self::NIF_MESSAGE | self::NIF_ICON | self::NIF_TIP;
+        $nid->uCallbackMessage = self::WM_TRAYICON;
+        $nid->hIcon = $this->intToShellHicon($hiconInt);
+        $this->writeWideStringField($nid->szTip, $tooltip, 128);
+
+        $this->shell32->Shell_NotifyIconW(self::NIM_ADD, \FFI::addr($nid));
+    }
+
+    public function trayModify(int $hwnd, int $trayId, int $hiconInt, string $tooltip): void
+    {
+        $nid = $this->shell32->new('NOTIFYICONDATAW');
+        $nid->cbSize = \FFI::sizeof($nid);
+        $nid->hWnd = $this->intToShellHwnd($hwnd);
+        $nid->uID = $trayId;
+        $nid->uFlags = self::NIF_ICON | self::NIF_TIP;
+        $nid->hIcon = $this->intToShellHicon($hiconInt);
+        $this->writeWideStringField($nid->szTip, $tooltip, 128);
+
+        $this->shell32->Shell_NotifyIconW(self::NIM_MODIFY, \FFI::addr($nid));
+    }
+
+    public function trayRemove(int $hwnd, int $trayId): void
+    {
+        $nid = $this->shell32->new('NOTIFYICONDATAW');
+        $nid->cbSize = \FFI::sizeof($nid);
+        $nid->hWnd = $this->intToShellHwnd($hwnd);
+        $nid->uID = $trayId;
+        $nid->uFlags = 0;
+
+        $this->shell32->Shell_NotifyIconW(self::NIM_DELETE, \FFI::addr($nid));
+    }
+
+    public function trayShowBalloon(int $hwnd, int $trayId, string $title, string $message, int $type, int $timeoutMs): void
+    {
+        $nid = $this->shell32->new('NOTIFYICONDATAW');
+        $nid->cbSize = \FFI::sizeof($nid);
+        $nid->hWnd = $this->intToShellHwnd($hwnd);
+        $nid->uID = $trayId;
+        $nid->uFlags = self::NIF_INFO;
+        $this->writeWideStringField($nid->szInfo, $message, 256);
+        $this->writeWideStringField($nid->szInfoTitle, $title, 64);
+        $nid->DUMMYUNIONNAME->uTimeout = $timeoutMs;
+        // 映射 BALLOON_* → NIIF_*
+        $niifMap = [
+            0 => self::NIIF_NONE,
+            1 => self::NIIF_INFO,
+            2 => self::NIIF_WARNING,
+            3 => self::NIIF_ERROR,
+        ];
+        $nid->dwInfoFlags = $niifMap[$type] ?? self::NIIF_INFO;
+
+        $this->shell32->Shell_NotifyIconW(self::NIM_MODIFY, \FFI::addr($nid));
+    }
+
+    public function trayShowContextMenu(int $hwnd, int $menuHwnd): void
+    {
+        // 必须在前台状态才能正确弹出菜单（Windows 限制）
+        $hwndC = $this->intToHwnd($hwnd);
+        $this->user32->SetForegroundWindow($hwndC);
+
+        // 获取鼠标光标位置
+        $pos = $this->user32->GetMessagePos();
+        $x = $pos & 0xFFFF;
+        $y = ($pos >> 16) & 0xFFFF;
+        if ($x >= 0x8000) { $x -= 0x10000; }
+        if ($y >= 0x8000) { $y -= 0x10000; }
+
+        // 弹出菜单（TPM_RETURNCMD 返回选中项 ID，但我们用 WM_COMMAND 分发，所以不用返回值）
+        $this->user32->TrackPopupMenu(
+            $this->intToHwnd($menuHwnd),
+            self::TPM_RIGHTBUTTON | self::TPM_LEFTALIGN,
+            $x, $y,
+            0,
+            $hwndC,
+            null
+        );
+
+        // Windows 已知 bug：TrackPopupMenu 返回后必须 PostMessage(WM_NULL)，
+        // 否则菜单首次点击可能不响应（仅 SetForegroundWindow 不够）。
+        $this->user32->PostMessageW($hwndC, self::WM_NULL, 0, 0);
+    }
+
+    public function loadIconFromFile(string $file, int $cx = 0, int $cy = 0): int
+    {
+        $wide = $this->utf8ToWide($file);
+        $hicon = $this->user32->LoadImageW(
+            null,
+            \FFI::addr($wide[0]),
+            self::IMAGE_ICON_LOAD,
+            $cx, $cy,
+            self::LR_LOADFROMFILE
+        );
+        if ($hicon === null || \FFI::isNull($hicon)) {
+            return 0;
+        }
+        return $this->ptrToInt($hicon);
+    }
+
+    public function loadSystemIcon(int $iconId): int
+    {
+        $hicon = $this->user32->LoadIconW(null, $iconId);
+        if ($hicon === null || \FFI::isNull($hicon)) {
+            return 0;
+        }
+        return $this->ptrToInt($hicon);
+    }
+
+    /**
+     * 从 Image 对象（GDI+ GpImage）创建 HICON。
+     *
+     * 内部流程：
+     *   1. 取 Image::getGpImage() 得到 gdiplus 作用域的 GpImage CData
+     *   2. 用 GdipGetImageType 检查类型（必须是 Bitmap=1）
+     *   3. 调用 GdipCreateHICONFromBitmap 转换为 HICON
+     *   4. 转为 int 句柄返回（调用方需 DestroyIcon 释放）
+     *
+     * @param object $image Kingbes\Ui\Graphics\Image 实例。
+     * @return int HICON int 句柄，失败返回 0。
+     */
+    public function iconCreateFromImage(object $image): int
+    {
+        if (!method_exists($image, 'getGpImage')) {
+            return 0;
+        }
+        $gpImage = $image->getGpImage();
+        $gp = $this->getGdiplus();
+
+        // 检查图像类型（仅 Bitmap=1 可转 HICON，Metafile 等不支持）
+        $type = $gp->new('int');
+        $status = (int) $gp->GdipGetImageType($gpImage, \FFI::addr($type));
+        if ($status !== 0 || (int) $type->cdata !== 1) {
+            return 0;
+        }
+
+        // GpImage → HICON（GDI+ 内部会处理 alpha 通道）
+        $hiconPtr = $gp->new('void*');
+        $status = (int) $gp->GdipCreateHICONFromBitmap($gpImage, \FFI::addr($hiconPtr));
+        if ($status !== 0 || $hiconPtr === null || \FFI::isNull($hiconPtr)) {
+            return 0;
+        }
+
+        // void* → int（gdiplus 作用域内用 INT_TO_PTR）
+        $caster = $gp->new('INT_TO_PTR');
+        $caster->p = $hiconPtr;
+        return (int) $caster->i;
+    }
+
+    public function destroyIconInt(int $hiconInt): void
+    {
+        if ($hiconInt === 0) {
+            return;
+        }
+        $caster = $this->user32->new('INT_TO_PTR');
+        $caster->i = $hiconInt;
+        $this->user32->DestroyIcon($caster->p);
+    }
+
+    /**
+     * 内部：处理托盘回调消息。
+     *
+     * WM_TRAYICON 回调约定：
+     *   wParam = 托盘 uID
+     *   lParam = 鼠标消息类型（WM_LBUTTONUP=0x0202 / WM_LBUTTONDBLCLK=0x0203 / WM_RBUTTONUP=0x0205 等）
+     *
+     * @param int $hwndInt 窗口句柄（未使用，预留）。
+     * @param int $wParam  托盘 uID。
+     * @param int $lParam  鼠标消息类型。
+     */
+    private function handleTrayCallback(int $hwndInt, int $wParam, int $lParam): void
+    {
+        $trayId = $wParam;
+        $mouseMsg = $lParam;
+        $tray = $this->trayIcons[$trayId] ?? null;
+        if ($tray === null) {
+            return;
+        }
+        try {
+            $tray->handleCallback($mouseMsg);
+        } catch (\Throwable $e) {
+            trigger_error('TrayIcon callback error: ' . $e->getMessage(), \E_USER_WARNING);
+        }
+    }
+
+    /**
+     * 内部：写入 wchar_t 数组字段（UTF-8 → UTF-16LE 填充，零结尾）。
+     *
+     * @param \FFI\CData $field  wchar_t[] CData 数组。
+     * @param string     $text   UTF-8 文本。
+     * @param int        $maxLen 数组最大长度（含末尾 \0）。
+     */
+    private function writeWideStringField(\FFI\CData $field, string $text, int $maxLen): void
+    {
+        $wide = mb_convert_encoding($text, 'UTF-16LE', 'UTF-8');
+        $chars = intdiv(strlen($wide), 2);
+        $copyLen = min($chars, $maxLen - 1);
+        for ($i = 0; $i < $copyLen; $i++) {
+            $field[$i] = ord($wide[$i * 2]) | (ord($wide[$i * 2 + 1]) << 8);
+        }
+        $field[$copyLen] = 0;
+    }
+
+    /**
+     * 内部：int → shell32 作用域 HWND。
+     */
+    private function intToShellHwnd(int $hwnd): \FFI\CData
+    {
+        $caster = $this->shell32->new('INT_TO_PTR');
+        $caster->i = $hwnd;
+        return $caster->p;
+    }
+
+    /**
+     * 内部：int → shell32 作用域 HICON。
+     */
+    private function intToShellHicon(int $hicon): \FFI\CData
+    {
+        $caster = $this->shell32->new('INT_TO_PTR');
+        $caster->i = $hicon;
+        return $caster->p;
     }
 
     // ============================================================
@@ -2260,6 +4073,621 @@ C;
             return $result & 0xFFFF;
         }
         // ProgressBar 无 GETPOS（旧版）；返回 0
+        return 0;
+    }
+
+    /**
+     * 启用/关闭 ProgressBar 不确定状态（marquee 滚动动画）。
+     *
+     * 实现：
+     *   - enabled=true：通过 GWL_STYLE 追加 PBS_MARQUEE 样式，
+     *     再发送 PBM_SETMARQUEE(wParam=1, lParam=updateMs) 启动动画。
+     *   - enabled=false：发送 PBM_SETMARQUEE(wParam=0) 停止动画，
+     *     并从 GWL_STYLE 移除 PBS_MARQUEE 样式。
+     *
+     * 注意：PBS_MARQUEE 仅 comctl32 6.0+（manifest 启用视觉样式后）支持，
+     * 旧版回退为普通进度条无视觉效果，但不会报错。
+     *
+     * @param int  $hwnd       ProgressBar 控件句柄。
+     * @param bool $enabled    true=启用滚动动画，false=恢复确定状态。
+     * @param int  $updateMs   动画更新间隔（毫秒），仅 enabled=true 时生效。
+     */
+    public function progressBarSetMarquee(int $hwnd, bool $enabled, int $updateMs = 30): void
+    {
+        $h = $this->intToHwnd($hwnd);
+        $style = (int) $this->user32->GetWindowLongPtrW($h, self::GWL_STYLE);
+        if ($enabled) {
+            $style |= self::PBS_MARQUEE;
+        } else {
+            $style &= ~self::PBS_MARQUEE;
+        }
+        $this->user32->SetWindowLongPtrW($h, self::GWL_STYLE, $style);
+        // wParam=1 启动 / 0 关闭，lParam=更新间隔（毫秒）
+        $this->user32->SendMessageW(
+            $h,
+            self::PBM_SETMARQUEE,
+            $enabled ? 1 : 0,
+            max(1, $updateMs)
+        );
+    }
+
+    // ============================================================
+    // Tab 标签页方法
+    // ============================================================
+
+    public function tabInsertItem(int $tabHwnd, int $index, string $text): void
+    {
+        $h = $this->intToHwnd($tabHwnd);
+        $buf = $this->utf8ToWide($text);
+        // 计算 wchar_t[] 长度（不含终止符）：sizeof(wchar_t[2])=4 字节
+        $len = intdiv(\FFI::sizeof($buf), 2) - 1;
+
+        $ti = $this->user32->new('TCITEMW');
+        $ti->mask = self::TCIF_TEXT;
+        $ti->dwState = 0;
+        $ti->dwStateMask = 0;
+        // LPWSTR 字段用 \FFI::addr 取 wchar_t[] 首元素地址
+        $ti->pszText = \FFI::addr($buf[0]);
+        $ti->cchTextMax = $len + 1;
+        $ti->iImage = 0;
+        $ti->lParam = 0;
+
+        // index=-1 表示追加到末尾
+        if ($index < 0) {
+            $count = (int) $this->user32->SendMessageW(
+                $h, self::TCM_GETITEMCOUNT, 0, 0
+            );
+            $index = $count;
+        }
+        $this->user32->SendMessageW(
+            $h, self::TCM_INSERTITEMW, $index,
+            $this->ptrToInt(\FFI::addr($ti))
+        );
+    }
+
+    public function tabDeleteItem(int $tabHwnd, int $index): void
+    {
+        $this->user32->SendMessageW(
+            $this->intToHwnd($tabHwnd), self::TCM_DELETEITEM, $index, 0
+        );
+    }
+
+    public function tabGetSelected(int $tabHwnd): int
+    {
+        return (int) $this->user32->SendMessageW(
+            $this->intToHwnd($tabHwnd), self::TCM_GETCURSEL, 0, 0
+        );
+    }
+
+    public function tabSetSelected(int $tabHwnd, int $index): void
+    {
+        $this->user32->SendMessageW(
+            $this->intToHwnd($tabHwnd), self::TCM_SETCURSEL, $index, 0
+        );
+    }
+
+    public function tabGetItemCount(int $tabHwnd): int
+    {
+        return (int) $this->user32->SendMessageW(
+            $this->intToHwnd($tabHwnd), self::TCM_GETITEMCOUNT, 0, 0
+        );
+    }
+
+    // ============================================================
+    // DateTimePicker
+    // ============================================================
+
+    public function dateTimePickerGetTime(int $hwnd): ?array
+    {
+        $h = $this->intToHwnd($hwnd);
+        $st = $this->user32->new('SYSTEMTIME');
+        $ret = (int) $this->user32->SendMessageW(
+            $h, self::DTM_GETSYSTEMTIME, 0, $this->ptrToInt(\FFI::addr($st))
+        );
+        if ($ret !== self::GDT_VALID) {
+            return null;
+        }
+        return [
+            'year'   => (int) $st->wYear,
+            'month'  => (int) $st->wMonth,
+            'day'    => (int) $st->wDay,
+            'hour'   => (int) $st->wHour,
+            'minute' => (int) $st->wMinute,
+            'second' => (int) $st->wSecond,
+        ];
+    }
+
+    public function dateTimePickerSetTime(
+        int $hwnd,
+        int $year,
+        int $month,
+        int $day,
+        int $hour,
+        int $minute,
+        int $second
+    ): void {
+        $h = $this->intToHwnd($hwnd);
+
+        $st = $this->user32->new('SYSTEMTIME');
+        $st->wYear = $year;
+        $st->wMonth = $month;
+        $st->wDay = $day;
+        $st->wHour = $hour;
+        $st->wMinute = $minute;
+        $st->wSecond = $second;
+
+        $this->user32->SendMessageW(
+            $h, self::DTM_SETSYSTEMTIME, self::GDT_VALID, $this->ptrToInt(\FFI::addr($st))
+        );
+    }
+
+    public function dateTimePickerSetFormat(int $hwnd, string $format): void
+    {
+        $h = $this->intToHwnd($hwnd);
+        $buf = $this->utf8ToWide($format);
+        $this->user32->SendMessageW(
+            $h, self::DTM_SETFORMATW, 0, $this->ptrToInt(\FFI::addr($buf[0]))
+        );
+    }
+
+    // ============================================================
+    // Table（ListView 虚拟模式）方法
+    // ============================================================
+
+    /**
+     * 设置 ListView 扩展样式（LVS_EX_FULLROWSELECT 等）。
+     *
+     * 通过 LVM_SETEXTENDEDLISTVIEWSTYLE 消息设置。
+     *
+     * @param int $hwnd    ListView 句柄。
+     * @param int $exStyle 扩展样式位掩码（LVS_EX_FULLROWSELECT=0x20 | LVS_EX_GRIDLINES=0x01）。
+     */
+    public function tableSetExtendedStyle(int $hwnd, int $exStyle): void
+    {
+        $h = $this->intToHwnd($hwnd);
+        // wParam=exStyle, lParam=exStyle 表示设置为新值（非掩码合并）
+        $this->user32->SendMessageW(
+            $h,
+            self::LVM_SETEXTENDEDLISTVIEWSTYLE,
+            $exStyle,
+            $exStyle
+        );
+    }
+
+    /**
+     * 插入一列。
+     *
+     * @param int    $hwnd  ListView 句柄。
+     * @param int    $index 列索引（0-based）。
+     * @param string $text  列标题。
+     * @param int    $width 列宽（像素）。
+     */
+    public function tableInsertColumn(int $hwnd, int $index, string $text, int $width): void
+    {
+        $h = $this->intToHwnd($hwnd);
+        $col = $this->user32->new('LVCOLUMNW');
+        $col->mask = self::LVCF_FMT | self::LVCF_WIDTH | self::LVCF_TEXT;
+        $col->fmt = self::LVCFMT_LEFT;
+        $col->cx = $width;
+        $col->iSubItem = $index;
+
+        $buf = $this->utf8ToWide($text);
+        $col->pszText = \FFI::addr($buf[0]);
+        $col->cchTextMax = mb_strlen($text, 'UTF-8') + 1;
+
+        // LVM_INSERTCOLUMNW: wParam=列索引, lParam=LVCOLUMNW* 指针
+        $this->user32->SendMessageW(
+            $h,
+            self::LVM_INSERTCOLUMNW,
+            $index,
+            $this->ptrToInt(\FFI::addr($col))
+        );
+    }
+
+    /**
+     * 清空所有列与所有项。
+     */
+    public function tableClearColumns(int $hwnd): void
+    {
+        $h = $this->intToHwnd($hwnd);
+        // 先删除所有项
+        $this->user32->SendMessageW($h, self::LVM_DELETEALLITEMS, 0, 0);
+        // 逆序删除列（正序删除会导致索引错位）
+        $count = $this->user32->new('int');
+        $count->cdata = 0;
+        // LVM_GETITEMCOUNT 仅返回项数，列数需通过 Header_GetItemCount 获取，
+        // 此处简化为从末尾 99 倒序尝试删除，遇到无效列自动停止。
+        for ($i = 99; $i >= 0; $i--) {
+            $ret = (int) $this->user32->SendMessageW(
+                $h, self::LVM_DELETECOLUMN, $i, 0
+            );
+            // 返回 TRUE=1 成功，FALSE=0 失败（列不存在）
+            // 继续尝试直到 i=0
+        }
+    }
+
+    /**
+     * 设置虚拟模式行数（LVM_SETITEMCOUNT）。
+     *
+     * LVS_OWNERDATA 模式下，ListView 据此知道总行数，
+     * 滚动条范围与可见行通过 LVN_GETDISPINFO 回调取数据。
+     */
+    public function tableSetItemCount(int $hwnd, int $count): void
+    {
+        $h = $this->intToHwnd($hwnd);
+        // LVM_SETITEMCOUNT: wParam=行数
+        $this->user32->SendMessageW($h, self::LVM_SETITEMCOUNT, $count, 0);
+    }
+
+    /**
+     * 刷新整张表（重绘所有可见行）。
+     */
+    public function tableRefresh(int $hwnd): void
+    {
+        $h = $this->intToHwnd($hwnd);
+        // 先更新行数（避免 model 行数变化后视图不刷新）
+        $this->user32->InvalidateRect($h, null, 1);
+    }
+
+    /**
+     * 刷新指定行（LVM_REDRAWITEMS）。
+     */
+    public function tableRefreshRow(int $hwnd, int $row): void
+    {
+        $h = $this->intToHwnd($hwnd);
+        // LVM_REDRAWITEMS: wParam=起始行, lParam=结束行
+        $this->user32->SendMessageW($h, self::LVM_REDRAWITEMS, $row, $row);
+        // 立即触发 WM_PAINT
+        $this->user32->UpdateWindow($h);
+    }
+
+    /**
+     * 选中指定行并滚动到可见。
+     *
+     * @param int $row 行索引，-1 取消选中。
+     */
+    public function tableSelectRow(int $hwnd, int $row): void
+    {
+        $h = $this->intToHwnd($hwnd);
+        if ($row < 0) {
+            // 取消当前选中：遍历所有选中项清除状态
+            // LVM_GETNEXTITEM: wParam=-1, lParam=LVNI_SELECTED 查找下一选中项
+            $cur = (int) $this->user32->SendMessageW(
+                $h, self::LVM_GETNEXTITEM, -1, self::LVNI_SELECTED
+            );
+            while ($cur !== -1) {
+                $item = $this->user32->new('LVITEMW');
+                $item->mask = self::LVIF_STATE;
+                $item->state = 0;
+                $item->stateMask = self::LVIS_SELECTED;
+                $item->iItem = $cur;
+                $this->user32->SendMessageW(
+                    $h, self::LVM_SETITEMSTATE, $cur,
+                    $this->ptrToInt(\FFI::addr($item))
+                );
+                $cur = (int) $this->user32->SendMessageW(
+                    $h, self::LVM_GETNEXTITEM, $cur, self::LVNI_SELECTED
+                );
+            }
+            return;
+        }
+
+        // 先清除现有选中
+        $this->tableSelectRow($hwnd, -1);
+
+        // 设置新选中行
+        $item = $this->user32->new('LVITEMW');
+        $item->mask = self::LVIF_STATE;
+        $item->state = self::LVIS_SELECTED | self::LVIS_FOCUSED;
+        $item->stateMask = self::LVIS_SELECTED | self::LVIS_FOCUSED;
+        $item->iItem = $row;
+        $this->user32->SendMessageW(
+            $h, self::LVM_SETITEMSTATE, $row,
+            $this->ptrToInt(\FFI::addr($item))
+        );
+
+        // 滚动到可见
+        $this->user32->SendMessageW($h, self::LVM_ENSUREVISIBLE, $row, 0);
+    }
+
+    /**
+     * 获取当前选中行索引。
+     *
+     * @return int 行索引，-1 表示无选中。
+     */
+    public function tableGetSelectedRow(int $hwnd): int
+    {
+        $h = $this->intToHwnd($hwnd);
+        return (int) $this->user32->SendMessageW(
+            $h, self::LVM_GETNEXTITEM, -1, self::LVNI_SELECTED
+        );
+    }
+
+    /**
+     * 设置某行背景色（NM_CUSTOMDRAW 着色）。
+     *
+     * @param int      $row   行索引。
+     * @param int|null $color COLORREF（0x00BBGGRR），null 清除。
+     */
+    public function tableSetRowBgColor(int $hwnd, int $row, ?int $color): void
+    {
+        if ($color === null) {
+            unset($this->tableRowBgColors[$hwnd][$row]);
+        } else {
+            $this->tableRowBgColors[$hwnd][$row] = $color & 0xFFFFFF;
+        }
+        $this->tableRefreshRow($hwnd, $row);
+    }
+
+    /**
+     * 设置某行文字颜色。
+     *
+     * @param int      $row   行索引。
+     * @param int|null $color COLORREF，null 清除。
+     */
+    public function tableSetRowTextColor(int $hwnd, int $row, ?int $color): void
+    {
+        if ($color === null) {
+            unset($this->tableRowTextColors[$hwnd][$row]);
+        } else {
+            $this->tableRowTextColors[$hwnd][$row] = $color & 0xFFFFFF;
+        }
+        $this->tableRefreshRow($hwnd, $row);
+    }
+
+    // ============================================================
+    // ImageList 通用 API（Table / Tab 共用）
+    // ============================================================
+
+    /**
+     * 创建 ImageList 并返回 int 句柄。
+     *
+     * 不关联到任何控件，由调用方通过 tableSetImageList / tabSetImageList 关联。
+     * CData 由 $imageLists 保活，防止 GC 回收。
+     *
+     * @param int $cx       图像宽度（像素）。
+     * @param int $cy       图像高度（像素）。
+     * @param int $cInitial 初始容量（默认 4）。
+     * @param int $cGrow    增长量（默认 4）。
+     * @return int ImageList 句柄。
+     */
+    public function imageListCreate(
+        int $cx,
+        int $cy,
+        int $cInitial = 4,
+        int $cGrow = 4
+    ): int {
+        // ILC_COLOR32 = 0x00000020
+        $himl = $this->comctl32->ImageList_Create($cx, $cy, 0x00000020, $cInitial, $cGrow);
+        if ($himl === null || \FFI::isNull($himl)) {
+            throw new \RuntimeException('ImageList_Create failed');
+        }
+        $id = $this->ptrToIntIn($this->comctl32, $himl);
+        $this->imageLists[$id] = $himl;
+        return $id;
+    }
+
+    /**
+     * 将 Image 添加到 ImageList，返回图像索引。
+     *
+     * 内部流程：
+     *   1. GpImage → HBITMAP（gdiplus 作用域，gdipImageToHbitmapInt）
+     *   2. HBITMAP int → comctl32 作用域 HBITMAP CData
+     *   3. ImageList_Add 加入列表，返回索引
+     *   4. DeleteObject 释放临时 HBITMAP（ImageList 内部会复制）
+     *
+     * @param int                          $imageListId ImageList 句柄。
+     * @param \Kingbes\Ui\Graphics\Image   $image       图像对象。
+     * @return int 图像在 ImageList 中的索引（0-based），-1 表示失败。
+     */
+    public function imageListAddImage(int $imageListId, \Kingbes\Ui\Graphics\Image $image): int
+    {
+        $himl = $this->imageLists[$imageListId]
+            ?? throw new \RuntimeException("Unknown ImageList handle: {$imageListId}");
+
+        // GpImage → HBITMAP（int）
+        $hbmInt = $this->gdipImageToHbitmapInt($image->getGpImage());
+        if ($hbmInt === 0) {
+            throw new \RuntimeException('gdipImageToHbitmapInt failed');
+        }
+        try {
+            // int → comctl32 作用域 HBITMAP
+            $hbmCData = $this->intToComctl32Bitmap($hbmInt);
+            return (int) $this->comctl32->ImageList_Add($himl, $hbmCData, null);
+        } finally {
+            // ImageList_Add 会复制位图，原始 HBITMAP 可立即释放
+            $this->deleteGdiObjectInt($hbmInt);
+        }
+    }
+
+    /**
+     * 销毁 ImageList 并从保活表中移除。
+     */
+    public function imageListDestroy(int $imageListId): void
+    {
+        $himl = $this->imageLists[$imageListId] ?? null;
+        if ($himl === null) {
+            return;
+        }
+        $this->comctl32->ImageList_Destroy($himl);
+        unset($this->imageLists[$imageListId]);
+    }
+
+    /**
+     * 将 ImageList 关联到 ListView（LVSIL_SMALL 槽位）。
+     */
+    public function tableSetImageList(int $hwnd, int $imageListId): void
+    {
+        $this->user32->SendMessageW(
+            $this->intToHwnd($hwnd),
+            self::LVM_SETIMAGELIST,
+            self::LVSIL_SMALL,
+            $imageListId
+        );
+    }
+
+    // ============================================================
+    // Button / Label 图像（BM_SETIMAGE / STM_SETIMAGE）
+    // ============================================================
+
+    /**
+     * 读取窗口样式（GWL_STYLE）。
+     *
+     * 通用方法，供 Button 等控件追加/移除样式位（如 BS_BITMAP）。
+     *
+     * @param int $hwnd 窗口/控件句柄。
+     * @return int 当前样式位掩码。
+     */
+    public function controlGetStyle(int $hwnd): int
+    {
+        return (int) $this->user32->GetWindowLongPtrW(
+            $this->intToHwnd($hwnd),
+            self::GWL_STYLE
+        );
+    }
+
+    /**
+     * 设置窗口样式（GWL_STYLE）。
+     *
+     * @param int $hwnd  窗口/控件句柄。
+     * @param int $style 新样式位掩码。
+     */
+    public function controlSetStyle(int $hwnd, int $style): void
+    {
+        $this->user32->SetWindowLongPtrW(
+            $this->intToHwnd($hwnd),
+            self::GWL_STYLE,
+            $style
+        );
+    }
+
+    /**
+     * 设置 Button 的位图图像（BM_SETIMAGE，IMAGE_BITMAP）。
+     *
+     * 按钮需有 BS_BITMAP(0x80) 样式才能正确显示位图；若按钮已用 BS_PUSHBUTTON
+     * 创建，BM_SETIMAGE 仍会显示图像但行为可能略有差异。
+     *
+     * @param int $hwnd   Button 句柄。
+     * @param int $hbmInt HBITMAP 的 int 句柄。
+     */
+    public function buttonSetImage(int $hwnd, int $hbmInt): void
+    {
+        $this->user32->SendMessageW(
+            $this->intToHwnd($hwnd),
+            self::BM_SETIMAGE,
+            self::IMAGE_BITMAP,
+            $hbmInt
+        );
+    }
+
+    /**
+     * 设置 Static（Label）控件的位图图像（STM_SETIMAGE，IMAGE_BITMAP）。
+     *
+     * 要求 Label 创建时使用 SS_BITMAP(0x0E) 样式，否则图像不会显示。
+     *
+     * @param int $hwnd   Static 控件句柄。
+     * @param int $hbmInt HBITMAP 的 int 句柄。
+     * @return int 旧图像的 int 句柄（需调用方释放），0 表示无旧图像。
+     */
+    public function labelSetImage(int $hwnd, int $hbmInt): int
+    {
+        $old = (int) $this->user32->SendMessageW(
+            $this->intToHwnd($hwnd),
+            self::STM_SETIMAGE,
+            self::IMAGE_BITMAP,
+            $hbmInt
+        );
+        return $old;
+    }
+
+    // ============================================================
+    // Tab 图像（TCM_SETIMAGELIST / TCM_SETITEMW）
+    // ============================================================
+
+    /**
+     * 将 ImageList 关联到 Tab 控件（TCM_SETIMAGELIST）。
+     */
+    public function tabSetImageList(int $hwnd, int $imageListId): void
+    {
+        $this->user32->SendMessageW(
+            $this->intToHwnd($hwnd),
+            self::TCM_SETIMAGELIST,
+            0,
+            $imageListId
+        );
+    }
+
+    /**
+     * 设置 Tab 某页签的图像索引（TCM_SETITEMW，TCIF_IMAGE）。
+     *
+     * @param int $hwnd       Tab 控件句柄。
+     * @param int $pageIndex  页签索引（0-based）。
+     * @param int $imageIndex ImageList 中的图像索引，-1 清除。
+     */
+    public function tabSetItemImage(int $hwnd, int $pageIndex, int $imageIndex): void
+    {
+        $ti = $this->user32->new('TCITEMW');
+        $ti->mask = self::TCIF_IMAGE;
+        $ti->iImage = $imageIndex;
+        $this->user32->SendMessageW(
+            $this->intToHwnd($hwnd),
+            self::TCM_SETITEMW,
+            $pageIndex,
+            $this->ptrToInt(\FFI::addr($ti))
+        );
+    }
+
+    // ============================================================
+    // MenuItem 图像（SetMenuItemInfoW，MIIM_BITMAP）
+    // ============================================================
+
+    /**
+     * 设置菜单项的位图图标（SetMenuItemInfoW，MIIM_BITMAP，按 ID 查找）。
+     *
+     * @param int $menuHwnd 菜单 HMENU 的 int 句柄。
+     * @param int $itemId   菜单项 ID。
+     * @param int $hbmInt   HBITMAP 的 int 句柄，0 清除图标。
+     */
+    public function menuSetItemBitmap(int $menuHwnd, int $itemId, int $hbmInt): void
+    {
+        $hmenu = $this->menus[$menuHwnd]
+            ?? throw new \RuntimeException("Unknown menu handle: {$menuHwnd}");
+
+        $mii = $this->user32->new('MENUITEMINFOW');
+        $mii->cbSize = \FFI::sizeof($mii);
+        $mii->fMask = self::MIIM_BITMAP;
+        // hbmpItem：0 表示清除，否则转 user32 作用域 HBITMAP
+        if ($hbmInt !== 0) {
+            $mii->hbmpItem = $this->intToUser32Bitmap($hbmInt);
+        } else {
+            $mii->hbmpItem = null;
+        }
+
+        // fByPosition=FALSE（按 ID 查找，第 3 参数为菜单项 ID）
+        $this->user32->SetMenuItemInfoW($hmenu, $itemId, 0, \FFI::addr($mii));
+        // 重绘菜单栏（仅对菜单栏有效，弹出菜单无需重绘）
+        $ownerHwnd = $this->getOwnerWindowHwnd($menuHwnd);
+        if ($ownerHwnd !== 0) {
+            $this->user32->DrawMenuBar($this->intToHwnd($ownerHwnd));
+        }
+    }
+
+    /**
+     * 查找菜单所属的顶级窗口 HWND（用于 DrawMenuBar）。
+     *
+     * 菜单栏通过 SetMenu 绑定到窗口，此处遍历已注册窗口查找匹配的 HMENU。
+     * 找不到返回 0（DrawMenuBar(0) 会被系统忽略，不影响弹出菜单）。
+     */
+    private function getOwnerWindowHwnd(int $menuHwnd): int
+    {
+        foreach ($this->windows as $hwnd => $win) {
+            if (method_exists($win, 'getMenu')) {
+                $menu = $win->getMenu();
+                if ($menu !== null && $menu->getHwnd() === $menuHwnd) {
+                    return $hwnd;
+                }
+            }
+        }
         return 0;
     }
 
@@ -2670,6 +5098,167 @@ C;
     public function areaInvalidate(int $hwnd): void
     {
         $this->user32->InvalidateRect($this->intToHwnd($hwnd), null, 1);
+    }
+
+    /**
+     * 设置 Area 的虚拟内容尺寸，启用/关闭滚动条。
+     *
+     * 实现：
+     *   - contentW/contentH > 0：通过 GWL_STYLE 追加 WS_HSCROLL/WS_VSCROLL，
+     *     存储内容尺寸到 areaScrollInfo，SetScrollInfo 设置滚动范围与页面大小。
+     *   - contentW/contentH = 0：移除 WS_HSCROLL/WS_VSCROLL，清除 areaScrollInfo。
+     *
+     * @param int $hwnd     Area 控件句柄。
+     * @param int $contentW 内容总宽度（像素）。
+     * @param int $contentH 内容总高度（像素）。
+     */
+    public function areaSetScrollable(int $hwnd, int $contentW, int $contentH): void
+    {
+        $h = $this->intToHwnd($hwnd);
+
+        if ($contentW <= 0 && $contentH <= 0) {
+            // 关闭滚动
+            $style = (int) $this->user32->GetWindowLongPtrW($h, self::GWL_STYLE);
+            $style &= ~(self::WS_HSCROLL | self::WS_VSCROLL);
+            $this->user32->SetWindowLongPtrW($h, self::GWL_STYLE, $style);
+            // SWP_FRAMECHANGED 让样式变化立即生效
+            $this->user32->SetWindowPos(
+                $h, null, 0, 0, 0, 0,
+                self::SWP_NOMOVE | self::SWP_NOSIZE | self::SWP_NOZORDER | self::SWP_FRAMECHANGED
+            );
+            unset($this->areaScrollInfo[$hwnd]);
+            return;
+        }
+
+        // 启用滚动：追加 WS_HSCROLL/WS_VSCROLL
+        $style = (int) $this->user32->GetWindowLongPtrW($h, self::GWL_STYLE);
+        $needStyle = $style;
+        if ($contentW > 0) {
+            $needStyle |= self::WS_HSCROLL;
+        } else {
+            $needStyle &= ~self::WS_HSCROLL;
+        }
+        if ($contentH > 0) {
+            $needStyle |= self::WS_VSCROLL;
+        } else {
+            $needStyle &= ~self::WS_VSCROLL;
+        }
+        if ($needStyle !== $style) {
+            $this->user32->SetWindowLongPtrW($h, self::GWL_STYLE, $needStyle);
+            $this->user32->SetWindowPos(
+                $h, null, 0, 0, 0, 0,
+                self::SWP_NOMOVE | self::SWP_NOSIZE | self::SWP_NOZORDER | self::SWP_FRAMECHANGED
+            );
+        }
+
+        // 客户区尺寸（页面大小）
+        $client = $this->controlClientSize($hwnd);
+
+        // 保留原 x/y，初始化内容尺寸
+        $prev = $this->areaScrollInfo[$hwnd] ?? ['w' => 0, 'h' => 0, 'x' => 0, 'y' => 0];
+        $info = [
+            'w' => max(0, $contentW),
+            'h' => max(0, $contentH),
+            'x' => $prev['x'],
+            'y' => $prev['y'],
+        ];
+
+        // 夹取滚动位置到有效范围
+        $maxX = max(0, $info['w'] - $client['w']);
+        $maxY = max(0, $info['h'] - $client['h']);
+        $info['x'] = max(0, min($info['x'], $maxX));
+        $info['y'] = max(0, min($info['y'], $maxY));
+        $this->areaScrollInfo[$hwnd] = $info;
+
+        // 设置滚动条范围与页面大小
+        if ($contentW > 0) {
+            $si = $this->buildScrollInfo(0, $info['w'], $client['w'], $info['x']);
+            $this->user32->SetScrollInfo($h, self::SB_HORZ, \FFI::addr($si), 1);
+        }
+        if ($contentH > 0) {
+            $si = $this->buildScrollInfo(0, $info['h'], $client['h'], $info['y']);
+            $this->user32->SetScrollInfo($h, self::SB_VERT, \FFI::addr($si), 1);
+        }
+
+        $this->user32->InvalidateRect($h, null, 1);
+    }
+
+    /**
+     * 程序化滚动 Area 到指定内容坐标。
+     */
+    public function areaScrollTo(int $hwnd, int $x, int $y): void
+    {
+        $info = $this->areaScrollInfo[$hwnd] ?? null;
+        if ($info === null) {
+            return;
+        }
+        $client = $this->controlClientSize($hwnd);
+        $maxX = max(0, $info['w'] - $client['w']);
+        $maxY = max(0, $info['h'] - $client['h']);
+        $info['x'] = max(0, min($x, $maxX));
+        $info['y'] = max(0, min($y, $maxY));
+        $this->areaScrollInfo[$hwnd] = $info;
+
+        $h = $this->intToHwnd($hwnd);
+        // 仅更新位置（SIF_POS）
+        $si = $this->user32->new('SCROLLINFO');
+        $si->cbSize = \FFI::sizeof($si);
+        $si->fMask = self::SIF_POS;
+        $si->nPos = $info['x'];
+        $this->user32->SetScrollInfo($h, self::SB_HORZ, \FFI::addr($si), 1);
+        $si->nPos = $info['y'];
+        $this->user32->SetScrollInfo($h, self::SB_VERT, \FFI::addr($si), 1);
+
+        $this->user32->InvalidateRect($h, null, 1);
+    }
+
+    /**
+     * 获取 Area 当前滚动位置。
+     *
+     * @return array{x:int, y:int}
+     */
+    public function areaGetScrollPos(int $hwnd): array
+    {
+        $info = $this->areaScrollInfo[$hwnd] ?? null;
+        if ($info === null) {
+            return ['x' => 0, 'y' => 0];
+        }
+        return ['x' => $info['x'], 'y' => $info['y']];
+    }
+
+    /**
+     * 构建 SCROLLINFO 结构体（SIF_RANGE|SIF_PAGE|SIF_POS）。
+     *
+     * @param int $min   最小值（一般为 0）。
+     * @param int $max   最大值（内容尺寸 - 1 或内容尺寸，按惯例用 max(0, content - 1)）。
+     * @param int $page  页面大小（可视区域尺寸，用于隐藏无效滚动范围）。
+     * @param int $pos   当前位置。
+     */
+    private function buildScrollInfo(int $min, int $max, int $page, int $pos): \FFI\CData
+    {
+        $si = $this->user32->new('SCROLLINFO');
+        $si->cbSize = \FFI::sizeof($si);
+        $si->fMask = self::SIF_RANGE | self::SIF_PAGE | self::SIF_POS;
+        $si->nMin = $min;
+        $si->nMax = max($min, $max - 1); // nMax 用 content-1，page 自动夹取
+        $si->nPage = max(0, $page);
+        $si->nPos = $pos;
+        return $si;
+    }
+
+    /**
+     * 获取控件客户区尺寸（宽/高）。
+     *
+     * @return array{w:int, h:int}
+     */
+    private function controlClientSize(int $hwnd): array
+    {
+        $rect = $this->user32->new('RECT');
+        $this->user32->GetClientRect($this->intToHwnd($hwnd), \FFI::addr($rect));
+        return [
+            'w' => (int) $rect->right,
+            'h' => (int) $rect->bottom,
+        ];
     }
 
     /**
