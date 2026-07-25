@@ -95,4 +95,23 @@ class Button extends Control
         // BM_SETIMAGE 关联位图
         $platform->buttonSetImage($this->hwnd, $this->hbmInt);
     }
+
+    /**
+     * 偏好高度：Windows 标准按钮高度 23px。
+     *
+     * 让布局容器在空间充足时给按钮分配 23px 高度，避免被压扁；
+     * 空间不足时回退到均分。
+     */
+    public function getPreferredHeight(): int
+    {
+        return 23;
+    }
+
+    /**
+     * 偏好宽度：0（由容器决定，按钮宽度通常随布局拉伸）。
+     */
+    public function getPreferredWidth(): int
+    {
+        return 0;
+    }
 }

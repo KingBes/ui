@@ -8,6 +8,7 @@ use Kingbes\Ui\Geometry\Point;
 use Kingbes\Ui\Geometry\Size;
 use Kingbes\Ui\Graphics\Color;
 use Kingbes\Ui\Platform\AbstractPlatform;
+use Kingbes\Ui\Theme;
 use Kingbes\Phpc\Library;
 use Kingbes\Phpc\SafeCall;
 use Kingbes\Phpc\Pointer;
@@ -57,6 +58,16 @@ class CocoaPlatform extends AbstractPlatform
     /** YES = 1, NO = 0 */
     private const YES = 1;
     private const NO = 0;
+
+    /**
+     * NSAppearance 名称字符串常量（NSString 值，非 selector）。
+     *
+     * 用于 [NSAppearance appearanceNamed:] 创建对应外观实例：
+     *   - NSAppearanceNameDarkAqua：macOS 10.14+ 深色外观
+     *   - NSAppearanceNameAqua：默认浅色外观
+     */
+    private const NS_APPEARANCE_NAME_DARK_AQUA = 'NSAppearanceNameDarkAqua';
+    private const NS_APPEARANCE_NAME_AQUA = 'NSAppearanceNameAqua';
 
     // ============================================================
     // FFI 实例
@@ -890,6 +901,71 @@ C;
     // queueMain 与 triggerRelayout 继承自 AbstractPlatform。
     // wakeUpMainLoop 默认空实现即可：run() 用 CFRunLoopRunInMode(0.01s)
     // 轮询，会自动拾取 queueMain 队列，无需主动唤醒。
+
+    // ============================================================
+    // 主题
+    // ============================================================
+
+    /**
+     * 设置应用主题。
+     *
+     * Cocoa 实现：通过 [NSApp setAppearance:] 设置应用全局外观。
+     *
+     *   - Theme::DARK：[NSApp setAppearance:[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua]]
+     *   - Theme::LIGHT：[NSApp setAppearance:[NSAppearance appearanceNamed:NSAppearanceNameAqua]]
+     *   - Theme::SYSTEM / Theme::CLASSIC：[NSApp setAppearance:nil]（跟随系统）
+     *
+     * 调用流程：
+     *   1. [NSApplication sharedApplication] 获取 NSApp 单例
+     *   2. DARK/LIGHT：
+     *      a. stringWithUTF8String: 从 C 字符串创建 NSString（外观名称）
+     *      b. [NSAppearance appearanceNamed:name] → NSAppearance 实例
+     *      c. [NSApp setAppearance:appearance]
+     *   3. SYSTEM/CLASSIC：
+     *      [NSApp setAppearance:nil]（nil 用 $this->objc->new('id') 创建）
+     *
+     * NSAppearanceNameDarkAqua / NSAppearanceNameAqua 是 NSString 常量值
+     *（非 selector），通过 stringWithUTF8String: 转换为 NSString 传递。
+     */
+    public function setAppTheme(string $theme): void
+    {
+        // [NSApplication sharedApplication] → NSApp 单例
+        $nsApp = $this->objc_msgSend_id(
+            $this->getClass('NSApplication'),
+            $this->sel('sharedApplication')
+        );
+
+        if ($theme === Theme::DARK || $theme === Theme::LIGHT) {
+            // 外观名称 NSString
+            $name = ($theme === Theme::DARK)
+                ? self::NS_APPEARANCE_NAME_DARK_AQUA
+                : self::NS_APPEARANCE_NAME_AQUA;
+            $nameStr = $this->nsString($name);
+
+            // [NSAppearance appearanceNamed:nameStr] → NSAppearance 实例
+            $appearanceCls = $this->getClass('NSAppearance');
+            $appearance = $this->objc_msgSend_with_id(
+                $appearanceCls,
+                $this->sel('appearanceNamed:'),
+                $nameStr
+            );
+
+            // [NSApp setAppearance:appearance]
+            $this->objc_msgSend_with_id(
+                $nsApp,
+                $this->sel('setAppearance:'),
+                $appearance
+            );
+        } else {
+            // Theme::SYSTEM / Theme::CLASSIC：[NSApp setAppearance:nil]（跟随系统）
+            $nil = $this->objc->new('id');
+            $this->objc_msgSend_with_id(
+                $nsApp,
+                $this->sel('setAppearance:'),
+                $nil
+            );
+        }
+    }
 
     // ============================================================
     // 系统服务

@@ -29,6 +29,8 @@ class Label extends Control
     private const SS_RIGHT  = 0x00000002;
     /** SS_BITMAP：静态控件显示位图 */
     private const SS_BITMAP = 0x0000000E;
+    /** SS_CENTERIMAGE：单行文本垂直居中 */
+    private const SS_CENTERIMAGE = 0x00000200;
 
     private string $text;
     private int $alignment;
@@ -79,6 +81,8 @@ class Label extends Control
             self::ALIGN_RIGHT  => self::SS_RIGHT,
             default            => self::SS_LEFT,
         };
+        // 文本模式：合并 SS_CENTERIMAGE 实现单行文本垂直居中
+        $style |= self::SS_CENTERIMAGE;
         $this->hwnd = App::platform()->controlCreate(
             'Static',
             $this->text,
@@ -116,5 +120,24 @@ class Label extends Control
         if ($oldHbm !== 0) {
             $platform->deleteGdiObjectInt($oldHbm);
         }
+    }
+
+    /**
+     * 偏好高度：Windows 标准单行文本高度约 17px。
+     *
+     * 让布局容器在空间充足时给标签分配 17px 高度，避免被拉伸；
+     * 空间不足时回退到均分。
+     */
+    public function getPreferredHeight(): int
+    {
+        return 17;
+    }
+
+    /**
+     * 偏好宽度：0（由容器决定，标签宽度通常随布局拉伸）。
+     */
+    public function getPreferredWidth(): int
+    {
+        return 0;
     }
 }

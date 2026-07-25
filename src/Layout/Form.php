@@ -13,18 +13,36 @@ use Kingbes\Ui\Window;
  * 每行包含一个标签控件与一个字段控件，标签列占宽度的 1/3，
  * 字段列占 2/3。行高均分，余数按行分配。
  *
+ * 对齐：字段控件可通过 addRow() 的 $align 参数指定在字段列内的对齐方式。
+ * ALIGN_FILL（整格拉伸）为显式拉伸语义；ALIGN_CENTER（默认）按 Preferred
+ * Size 居中，避免输入框被拉满整格。需要拉伸的控件（TextArea/Slider 等）
+ * 应显式传 ALIGN_FILL。标签列始终填满。
+ *
  * 使用 addRow() 添加行；add() 仍可用（控件追加到 children），
  * 但不参与 Form 的两列布局。
  */
 class Form extends Container
 {
+    /** 对齐：拉伸到整格（原行为）。 */
+    public const ALIGN_FILL   = 0;
+    /** 对齐：按 Preferred Size 居中（宽度/高度无 Preferred 时回退到整格）。 */
+    public const ALIGN_CENTER = 1;
+    /** 对齐：靠左，宽度用 Preferred（无则整格），垂直居中。 */
+    public const ALIGN_LEFT   = 2;
+    /** 对齐：靠右，宽度用 Preferred（无则整格），垂直居中。 */
+    public const ALIGN_RIGHT  = 3;
+    /** 对齐：靠顶，高度用 Preferred（无则整格），水平填满。 */
+    public const ALIGN_TOP    = 4;
+    /** 对齐：靠底，高度用 Preferred（无则整格），水平填满。 */
+    public const ALIGN_BOTTOM = 5;
+
     /**
      * 标签列占宽度的比例（1/labelRatio）。
      */
     private int $labelRatio = 3;
 
     /**
-     * @var list<array{label: Control, field: Control}>
+     * @var list<array{label: Control, field: Control, align: int}>
      */
     private array $rows = [];
 
@@ -52,13 +70,19 @@ class Form extends Container
      * 添加一行（标签 + 字段）。
      *
      * 两个控件同时加入 $children（用于 destroy/GC），并记录到 $rows
-     * 供 layout() 使用。
+     * 供 layout() 使用。$align 仅作用于字段控件；标签列始终填满。
+     *
+     * @param Control $label 标签控件。
+     * @param Control $field 字段控件。
+     * @param int     $align 字段控件在字段列内的对齐方式（默认 ALIGN_CENTER）。
+     *                       需要整格拉伸的控件（TextArea/Slider 等）应显式传
+     *                       ALIGN_FILL。
      */
-    public function addRow(Control $label, Control $field): static
+    public function addRow(Control $label, Control $field, int $align = self::ALIGN_CENTER): static
     {
         $this->children[] = $label;
         $this->children[] = $field;
-        $this->rows[] = ['label' => $label, 'field' => $field];
+        $this->rows[] = ['label' => $label, 'field' => $field, 'align' => $align];
         if ($label instanceof self) {
             $label->setToplevel(false);
         }
@@ -71,7 +95,7 @@ class Form extends Container
     /**
      * 获取行列表。
      *
-     * @return list<array{label: Control, field: Control}>
+     * @return list<array{label: Control, field: Control, align: int}>
      */
     public function getRows(): array
     {
@@ -93,6 +117,12 @@ class Form extends Container
     /**
      * 执行表单布局：标签-字段两列。
      *
+     * 标签列始终填满；字段列根据 addRow() 记录的 $align 计算实际位置与尺寸：
+     *   - ALIGN_FILL：拉伸到整列（原行为）。
+     *   - ALIGN_CENTER：按 Preferred Size 居中（无 Preferred 则整列）。
+     *   - ALIGN_LEFT/RIGHT：水平靠左/右，宽度用 Preferred（无则整列），垂直居中。
+     *   - ALIGN_TOP/BOTTOM：垂直靠顶/底，高度用 Preferred（无则整列），水平填满。
+     *
      * 子控件坐标相对于 Container 自身客户区 (0, 0)，而非传入的 $x/$y
      * （详见 Box::layout 的说明）。
      */
@@ -112,17 +142,53 @@ class Form extends Container
         $i = 0;
         foreach ($this->rows as $row) {
             $h = $rowHeight + ($i < $remainder ? 1 : 0);
-            // 标签列（用 setBounds 支持 SpinBox 等重写）
+            $align = $row['align'];
+            $field = $row['field'];
+
+            // 标签列：始终填满（用 setBounds 支持 SpinBox 等重写）
             $row['label']->setBounds(0, $cy, $labelWidth, $h);
-            // 字段列
-            $fieldX = $labelWidth;
-            $row['field']->setBounds($fieldX, $cy, $fieldWidth, $h);
-            // 递归布局嵌套容器：传本地坐标 (0, 0)
             if ($row['label'] instanceof Container) {
                 $row['label']->layout(0, 0, $labelWidth, $h);
             }
-            if ($row['field'] instanceof Container) {
-                $row['field']->layout(0, 0, $fieldWidth, $h);
+
+            // 字段列：按 $align 计算实际位置与尺寸
+            $fieldX = $labelWidth;
+            $pw = $field->getPreferredWidth();
+            $ph = $field->getPreferredHeight();
+
+            if ($align === self::ALIGN_FILL) {
+                // 整列拉伸（原行为）
+                $aw = $fieldWidth;
+                $ah = $h;
+                $ax = $fieldX;
+                $ay = $cy;
+            } else {
+                // 宽度：ALIGN_TOP/BOTTOM 整列；其余用 Preferred（无则整列）
+                if ($align === self::ALIGN_TOP || $align === self::ALIGN_BOTTOM) {
+                    $aw = $fieldWidth;
+                } else {
+                    $aw = $pw > 0 ? $pw : $fieldWidth;
+                }
+                // 高度：用 Preferred（无则整行高）
+                $ah = $ph > 0 ? $ph : $h;
+
+                // 水平位置
+                $ax = match ($align) {
+                    self::ALIGN_CENTER => $fieldX + intdiv($fieldWidth - $aw, 2),
+                    self::ALIGN_RIGHT  => $fieldX + ($fieldWidth - $aw),
+                    default            => $fieldX, // LEFT/TOP/BOTTOM
+                };
+                // 垂直位置
+                $ay = match ($align) {
+                    self::ALIGN_TOP    => $cy,
+                    self::ALIGN_BOTTOM => $cy + ($h - $ah),
+                    default            => $cy + intdiv($h - $ah, 2), // CENTER/LEFT/RIGHT
+                };
+            }
+
+            $field->setBounds($ax, $ay, $aw, $ah);
+            if ($field instanceof Container) {
+                $field->layout(0, 0, $aw, $ah);
             }
             $cy += $h;
             $i++;

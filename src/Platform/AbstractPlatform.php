@@ -411,4 +411,36 @@ abstract class AbstractPlatform implements PlatformInterface
         }
         $container->layout(0, 0, $innerW, $innerH);
     }
+
+    // ============================================================
+    // 主题与视觉样式（Windows 特有，默认空实现）
+    //
+    // WindowsPlatform 重写这些方法提供具体实现。
+    // GtkPlatform / CocoaPlatform 继承空实现——GTK/Cocoa 自带主题系统，
+    // 不需要 manifest 激活机制。后续 GTK/Cocoa 可独立设计各自的主题 API。
+    // ============================================================
+
+    /**
+     * 启用视觉样式（Windows 特有，其他平台空实现）。
+     */
+    public function enableVisualStyles(): void
+    {
+        // 默认空实现；WindowsPlatform 重写为 CreateActCtxW + ActivateActCtx
+    }
+
+    /**
+     * 设置应用主题（Windows 特有，其他平台空实现）。
+     */
+    public function setAppTheme(string $theme): void
+    {
+        // 默认空实现；WindowsPlatform 重写为 uxtheme SetPreferredAppMode
+    }
+
+    /**
+     * 设置窗口标题栏深色模式（Windows 特有，其他平台空实现）。
+     */
+    public function setWindowDarkMode(int $hwnd, bool $dark): void
+    {
+        // 默认空实现；WindowsPlatform 重写为 DwmSetWindowAttribute
+    }
 }

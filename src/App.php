@@ -27,6 +27,14 @@ final class App
     private static ?PlatformInterface $platform = null;
 
     /**
+     * 当前主题（App::run 启动前可通过 setTheme 修改）。
+     *
+     * 默认 Theme::SYSTEM（启用视觉样式，跟随系统深浅色）。
+     * 平台首次创建时（platform() 方法内）应用此值。
+     */
+    private static string $theme = Theme::SYSTEM;
+
+    /**
      * 平台类名映射表。
      *
      * 键为 PHP_OS_FAMILY，值为对应平台实现类的完全限定名。
@@ -75,6 +83,9 @@ final class App
         }
         /** @var PlatformInterface $class */
         self::$platform = new $class();
+        // 平台创建后立即应用主题（必须在任何窗口创建/控件创建之前）
+        self::$platform->setAppTheme(self::$theme);
+        self::$platform->enableVisualStyles();
         return self::$platform;
     }
 
@@ -149,5 +160,45 @@ final class App
     public static function clearTimer(int $id): void
     {
         self::platform()->clearTimer($id);
+    }
+
+    /**
+     * 设置主题。
+     *
+     * 必须在 App::run() 之前、且在任何 Window/Control 创建之前调用（因为
+     * platform() 惰性创建时会立即应用主题，平台首次创建后再修改无效）。
+     *
+     * 合法值：Theme::SYSTEM / Theme::CLASSIC / Theme::DARK / Theme::LIGHT。
+     * 非法值抛 InvalidArgumentException。
+     *
+     * 平台已初始化后调用会触发 E_USER_WARNING（主题不会重新应用，需重启进程）。
+     *
+     * @param string $theme 主题常量（见 Theme 类）。
+     * @throws \InvalidArgumentException 非法主题值时抛出。
+     */
+    public static function setTheme(string $theme): void
+    {
+        if (!Theme::isValid($theme)) {
+            throw new \InvalidArgumentException(
+                "Invalid theme '{$theme}'; expected one of: "
+                . implode(', ', [Theme::SYSTEM, Theme::CLASSIC, Theme::DARK, Theme::LIGHT])
+            );
+        }
+        if (self::$platform !== null) {
+            trigger_error(
+                "App::setTheme() called after platform initialization; "
+                . "theme change has no effect, restart the process to apply new theme",
+                \E_USER_WARNING
+            );
+        }
+        self::$theme = $theme;
+    }
+
+    /**
+     * 获取当前主题。
+     */
+    public static function getTheme(): string
+    {
+        return self::$theme;
     }
 }

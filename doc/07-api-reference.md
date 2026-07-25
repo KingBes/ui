@@ -12,7 +12,27 @@ App::queueMain(\Closure $fn): void         // 投递到主线程队列
 App::platform(): PlatformInterface         // 平台实例
 App::setPlatform(PlatformInterface $p)     // 注入自定义平台
 App::resetPlatform(): void                 // 重置（测试用）
+App::setTheme(string $theme): void         // 设置主题（Windows 特有，run 之前）
+App::getTheme(): string                    // 读取当前主题
 ```
+
+## Theme
+
+主题预设常量类，仅 Windows 平台生效；Linux / macOS 调用相关 API 会被静默忽略。
+
+```php
+Theme::SYSTEM   // 'system'  跟随系统（默认）
+Theme::CLASSIC  // 'classic' 经典外观，不加载 ComCtl32 v6 manifest
+Theme::DARK     // 'dark'    强制深色（uxtheme ForceDark）
+Theme::LIGHT    // 'light'   强制浅色（uxtheme ForceLight）
+```
+
+| 调用点 | 说明 |
+| --- | --- |
+| `App::setTheme(Theme::DARK)` | 必须在 `App::run()` 之前、任何 Window/Control 创建之前调用；非法值抛 `InvalidArgumentException`；平台已初始化后调用触发 `E_USER_WARNING` |
+| `Window::setDarkMode(bool): self` | 单窗口标题栏深色覆盖（`DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)`，旧版本静默失败） |
+
+详见 [06-advanced.md 主题与视觉样式](06-advanced.md#主题与视觉样式windows-特有)。
 
 ## Window
 
@@ -30,6 +50,7 @@ getClientSize(): Size
 // 样式
 setFullscreen(bool) / setBorderless(bool) / setResizeable(bool)
 setTopmost(bool) / setMargined(int $pixels) / getMargined(): int
+setDarkMode(bool $dark): self            // 标题栏深色覆盖（Windows 特有）
 
 // 状态
 maximize() / minimize() / restore() / show() / hide() / close()
@@ -483,11 +504,38 @@ $pt->x / $pt->y  // int
 $size->width / $size->height  // int
 ```
 
+## 平台契约（PlatformInterface）
+
+主题相关方法在 `PlatformInterface` 中定义，Windows 平台完整实现，Linux / macOS 为空实现：
+
+```php
+interface PlatformInterface {
+    // ...
+
+    // 启用 ComCtl32 v6 视觉样式（CreateActCtxW + ActivateActCtx，幂等）
+    public function enableVisualStyles(): void;
+
+    // 设置应用主题（SYSTEM/CLASSIC/DARK/LIGHT），内部决定是否调用 enableVisualStyles + uxtheme
+    public function setAppTheme(string $theme): void;
+
+    // 单窗口标题栏深色模式（DwmSetWindowAttribute，旧版本静默失败）
+    public function setWindowDarkMode(int $hwnd, bool $dark): void;
+}
+```
+
+| 方法 | Windows 实现 | Linux / macOS |
+| --- | --- | --- |
+| `enableVisualStyles()` | 加载 ComCtl32 v6 manifest，启用 PerMonitorV2 DPI 感知，幂等 | 空实现 |
+| `setAppTheme(string)` | DARK=ForceDark / LIGHT=ForceLight / SYSTEM=Default / CLASSIC 不调用 uxtheme | 空实现，静默忽略 |
+| `setWindowDarkMode(int, bool)` | `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)`，旧版本（< 10 1809）静默失败 | 空实现 |
+
+> 非 CLASSIC 主题下控件默认字体为 "Segoe UI" 9pt。
+
 ## 命名空间速查
 
 | 命名空间 | 主要类 |
 | --- | --- |
-| `Kingbes\Ui` | App, Window, Control, TrayIcon, Clipboard, Dialogs, Process, Screen |
+| `Kingbes\Ui` | App, Window, Control, Theme, TrayIcon, Clipboard, Dialogs, Process, Screen |
 | `Kingbes\Ui\Control` | Button, Label, Entry, TextArea, Checkbox, RadioBox, ComboBox, EditableComboBox, ListBox, Slider, SpinBox, ProgressBar, DateTimePicker, ColorButton, FontButton, Separator, Table, TableModel, Area, PasswordEntry |
 | `Kingbes\Ui\Layout` | Container, Box, HBox, VBox, Grid, Form, Group, Tab |
 | `Kingbes\Ui\Graphics` | Color, Image, DrawContext, DrawPath, GradientBrush, AttributedString |

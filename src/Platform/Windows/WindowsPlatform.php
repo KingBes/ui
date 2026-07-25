@@ -24,6 +24,7 @@ use Kingbes\Ui\Events\KeyEvent;
 use Kingbes\Ui\TrayIcon;
 use Kingbes\Ui\Events\MouseEvent;
 use Kingbes\Ui\Events\ResizeEvent;
+use Kingbes\Ui\Theme;
 use Kingbes\Phpc\Library;
 
 /**
@@ -101,6 +102,7 @@ class WindowsPlatform extends AbstractPlatform
     private const WM_SIZE        = 0x0005;
     private const WM_MOVE        = 0x0003;
     private const WM_PAINT       = 0x000F;
+    private const WM_ERASEBKGND  = 0x0014;
     private const WM_CLOSE       = 0x0010;
     private const WM_QUIT        = 0x0012;
     private const WM_NULL        = 0x0000;
@@ -290,6 +292,9 @@ class WindowsPlatform extends AbstractPlatform
 
     // DateTimePicker 通知（DTN_FIRST2 = -753）
     private const DTN_DATETIMECHANGE = -759;
+
+    // UpDown 控件通知（UDN_FIRST = -721）
+    private const UDN_DELTAPOS = -722;
 
     // DateTimePicker 返回值
     private const GDT_VALID = 0; // 时间有效
@@ -501,6 +506,50 @@ class WindowsPlatform extends AbstractPlatform
     private const IDI_INFORMATION = 32516;
 
     // ============================================================
+    // 视觉样式 / 激活上下文 / 深色模式 常量（Task 3/4）
+    // ============================================================
+
+    /** ACTCTX dwFlags 标志 */
+    private const ACTCTX_FLAG_PROCESSOR_ARCHITECTURE = 0;
+    private const ACTCTX_FLAG_PROCESSOR_ARCHITECTURE_VALID = 0x001;
+    private const ACTCTX_FLAG_LANGID_VALID                 = 0x002;
+    private const ACTCTX_FLAG_ASSEMBLY_DIRECTORY_VALID     = 0x004;
+    private const ACTCTX_FLAG_RESOURCE_NAME_VALID          = 0x008;
+    private const ACTCTX_FLAG_SET_PROCESS_DEFAULT          = 0x010;
+    private const ACTCTX_FLAG_ASSEMBLY_NAME_VALID          = 0x040;
+    private const ACTCTX_FLAG_SOURCE_IS_FILE               = 0x080;
+
+    /** DwmSetWindowAttribute 属性 ID：沉浸式深色模式（Windows 10 1809+ 用 20，旧版用 19） */
+    private const DWMWA_USE_IMMERSIVE_DARK_MODE      = 20;
+    private const DWMWA_USE_IMMERSIVE_DARK_MODE_OLD  = 19;
+
+    /**
+     * 运行时 manifest XML 模板：ComCtl32 v6 依赖。
+     *
+     * 写入临时文件后由 CreateActCtxW 激活，启用现代视觉样式（圆角按钮、
+     * 主题色控件等）。UTF-8 with BOM 编码（CreateActCtxW 实测可识别）。
+     * 注意：不声明 dpiAware/PerMonitorV2，避免 DPI 缩放与现有布局逻辑
+     * 冲突导致控件坐标错乱（"隔着一层"现象）。DPI 感知待后续单独实现。
+     */
+    private const MANIFEST_XML = <<<XML
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+</assembly>
+XML;
+
+    // ============================================================
     // FFI 实例
     // ============================================================
 
@@ -588,6 +637,31 @@ class WindowsPlatform extends AbstractPlatform
 
     /** 默认字体 HFONT int 值（用于 WPARAM）。 */
     private int $defaultFontInt = 0;
+
+    // ============================================================
+    // 主题与视觉样式状态（Task 3/4/6）
+    // ============================================================
+
+    /** 激活上下文句柄（HANDLE，kernel32 作用域；非 null 表示已激活）。 */
+    private $hActCtx = null;
+
+    /** 激活上下文 cookie（ULONG_PTR，DeactivateActCtx 用）。 */
+    private $actCtxCookie = 0;
+
+    /** uxtheme.dll FFI 实例（SetPreferredAppMode 深色模式；旧系统可能加载失败）。 */
+    private ?\FFI $uxtheme = null;
+
+    /** dwmapi.dll FFI 实例（DwmSetWindowAttribute 标题栏深色；旧系统可能加载失败）。 */
+    private ?\FFI $dwmapi = null;
+
+    /** 当前主题（Theme::SYSTEM/CLASSIC/DARK/LIGHT）。 */
+    private string $currentTheme = Theme::SYSTEM;
+
+    /** 现代字体 HFONT（CData，gdi32 作用域；非 CLASSIC 主题时创建，9pt Segoe UI）。 */
+    private $hFont = null;
+
+    /** manifest 临时文件路径（析构时 unlink）。 */
+    private string $manifestFile = '';
 
     /**
      * 菜单 HMENU CData 保活表：menuHwnd(int) => HMENU CData。
@@ -679,6 +753,29 @@ class WindowsPlatform extends AbstractPlatform
 
         // 初始化 GDI+（彩色 emoji 渲染必需，否则所有 GDI+ 函数返回错误）
         $this->initGdiplus();
+
+        // 动态加载 uxtheme.dll / dwmapi.dll（Task 4：深色模式）。
+        // 旧系统（XP/2000）可能没有这两个 DLL 或缺失部分导出函数，
+        // 用 \FFI::cdef 直接加载并捕获异常静默失败，保证向后兼容。
+        $this->uxtheme = $this->loadOptionalFfi('uxtheme.dll', self::UXTHEME_HEADER);
+        $this->dwmapi  = $this->loadOptionalFfi('dwmapi.dll',  self::DWMAPI_HEADER);
+    }
+
+    /**
+     * 动态加载可选 FFI 库（DLL 不存在或函数缺失时静默返回 null）。
+     *
+     * 用于 uxtheme.dll / dwmapi.dll：Windows 2000/XP 可能没有这些 DLL，
+     * 或部分导出函数不存在（如 SetPreferredAppMode 仅 Win10 1809+ 有）。
+     * cdef 失败时返回 null，调用方需判空。
+     */
+    private function loadOptionalFfi(string $lib, string $header): ?\FFI
+    {
+        try {
+            return \FFI::cdef($header, $lib);
+        } catch (\Throwable $e) {
+            // 旧系统无此 DLL 或函数不存在，静默降级
+            return null;
+        }
     }
 
     /**
@@ -705,6 +802,229 @@ class WindowsPlatform extends AbstractPlatform
                 'GdiplusStartup failed with status ' . $status
                 . ' (彩色 emoji 渲染不可用)'
             );
+        }
+    }
+
+    /**
+     * 析构：释放激活上下文 + 现代字体 + 清理 manifest 临时文件。
+     *
+     * 注意：FFI 实例本身由 PHP GC 自动释放，此处只处理需要显式释放
+     * 的系统资源（HACTCTX / HFONT / 临时文件）。
+     */
+    public function __destruct()
+    {
+        // 1. 释放激活上下文（DeactivateActCtx + ReleaseActCtx）
+        if ($this->hActCtx !== null && $this->kernel32 !== null) {
+            try {
+                // 将 cookie 整数封装回 ULONG_PTR（用 INT_TO_PTR 联合体）
+                $caster = $this->kernel32->new('INT_TO_PTR');
+                $caster->i = $this->actCtxCookie;
+                $this->kernel32->DeactivateActCtx(0, $caster->i);
+            } catch (\Throwable $e) {
+                // 析构期静默忽略
+            }
+            try {
+                $this->kernel32->ReleaseActCtx($this->hActCtx);
+            } catch (\Throwable $e) {
+                // 析构期静默忽略
+            }
+            $this->hActCtx = null;
+        }
+
+        // 2. 释放现代字体 HFONT（Task 6）
+        if ($this->hFont !== null && $this->gdi32 !== null) {
+            try {
+                $this->gdi32->DeleteObject($this->hFont);
+            } catch (\Throwable $e) {
+                // 忽略
+            }
+            $this->hFont = null;
+        }
+
+        // 3. 清理 manifest 临时文件
+        if ($this->manifestFile !== '' && is_file($this->manifestFile)) {
+            @unlink($this->manifestFile);
+        }
+        $this->manifestFile = '';
+    }
+
+    // ============================================================
+    // 主题与视觉样式（Task 3/4）
+    // ============================================================
+
+    /**
+     * 启用 ComCtl32 v6 视觉样式（运行时 manifest 激活）。
+     *
+     * 流程：
+     *   1. 幂等检查：$this->hActCtx 已设置则直接返回。
+     *   2. 将 manifest XML（UTF-8 with BOM）写入临时文件。
+     *   3. 构造 ACTCTXW，dwFlags=ACTCTX_FLAG_SOURCE_IS_FILE，
+     *      lpSource 指向 manifest 文件路径的 wchar_t[]。
+     *   4. CreateActCtxW 创建句柄，失败（旧系统）静默返回。
+     *   5. ActivateActCtx 激活，记录 hActCtx 和 cookie 供析构释放。
+     *
+     * 幂等性：可能被 setAppTheme() 和 App::platform() 多次调用。
+     */
+    public function enableVisualStyles(): void
+    {
+        // 幂等：已激活则直接返回
+        if ($this->hActCtx !== null) {
+            return;
+        }
+
+        // 写 manifest 临时文件（UTF-8 with BOM，CreateActCtxW 可识别）
+        $this->manifestFile = sys_get_temp_dir()
+            . '/php_ui_manifest_' . getmypid() . '.xml';
+        $bom = "\xEF\xBB\xBF";
+        $written = @file_put_contents($this->manifestFile, $bom . self::MANIFEST_XML);
+        if ($written === false) {
+            // 无法写临时文件，静默放弃（视觉样式不可用，不影响功能）
+            $this->manifestFile = '';
+            return;
+        }
+
+        // manifest 文件路径 → wchar_t[]（kernel32 作用域内，owned=false 防 GC）
+        $pathWide = $this->wideBufIn($this->kernel32, $this->manifestFile);
+
+        $actctx = $this->kernel32->new('ACTCTXW');
+        $actctx->cbSize = \FFI::sizeof($actctx);
+        $actctx->dwFlags = self::ACTCTX_FLAG_SOURCE_IS_FILE;
+        $actctx->lpSource = \FFI::addr($pathWide[0]);
+        $actctx->wProcessorArchitecture = 0;
+        $actctx->wLangId = 0;
+        $actctx->lpAssemblyDirectory = null;
+        $actctx->lpResourceName = null;
+        $actctx->lpApplicationName = null;
+        $actctx->hModule = null;
+
+        $hActCtx = $this->kernel32->CreateActCtxW(\FFI::addr($actctx));
+
+        // INVALID_HANDLE_VALUE = -1（CreateActCtxW 失败时返回）
+        if ($hActCtx === null || \FFI::isNull($hActCtx)) {
+            // 旧系统不支持激活上下文，静默降级到经典样式
+            return;
+        }
+        // 检查 INVALID_HANDLE_VALUE (-1)：CreateActCtxW 失败时返回
+        $caster = $this->kernel32->new('INT_TO_PTR');
+        $caster->p = $hActCtx;
+        $hInt = (int) $caster->i;
+        if ($hInt === -1) {
+            // manifest 加载失败，静默降级到经典样式
+            return;
+        }
+
+        // 激活上下文：cookie 存 $this->actCtxCookie（ULONG_PTR 整数）
+        $cookie = $this->kernel32->new('ULONG_PTR');
+        $ok = (int) $this->kernel32->ActivateActCtx($hActCtx, \FFI::addr($cookie));
+        if ($ok === 0) {
+            // 激活失败，释放句柄后静默返回
+            try {
+                $this->kernel32->ReleaseActCtx($hActCtx);
+            } catch (\Throwable $e) {
+                // 忽略
+            }
+            return;
+        }
+
+        // 将 ULONG_PTR CData 转为整数保存（用 cdata 属性读取标量值）
+        $this->actCtxCookie = (int) $cookie->cdata;
+        $this->hActCtx = $hActCtx;
+    }
+
+    /**
+     * 设置应用主题（覆盖父类空实现）。
+     *
+     * - 记录 $this->currentTheme
+     * - 非 CLASSIC 主题调用 enableVisualStyles()（幂等）启用 ComCtl32 v6
+     * - 根据 $theme 调用 SetPreferredAppMode 设置深色/浅色
+     *
+     * @param string $theme Theme::SYSTEM/CLASSIC/DARK/LIGHT
+     */
+    public function setAppTheme(string $theme): void
+    {
+        $this->currentTheme = $theme;
+
+        // CLASSIC 保持经典灰样式，不启用视觉样式
+        if ($theme !== Theme::CLASSIC) {
+            $this->enableVisualStyles();
+        }
+
+        // 根据 $theme 设置深色/浅色偏好
+        switch ($theme) {
+            case Theme::DARK:
+                $this->setPreferredAppMode(2); // ForceDark
+                break;
+            case Theme::LIGHT:
+                $this->setPreferredAppMode(3); // ForceLight
+                break;
+            case Theme::SYSTEM:
+                $this->setPreferredAppMode(0); // Default（跟随系统）
+                break;
+            case Theme::CLASSIC:
+            default:
+                // CLASSIC 不调用 SetPreferredAppMode，保持系统默认
+                break;
+        }
+    }
+
+    /**
+     * 调用 uxtheme SetPreferredAppMode 设置应用深色/浅色偏好。
+     *
+     * mode: 0=Default, 1=AllowDark, 2=ForceDark, 3=ForceLight。
+     * uxtheme.dll 加载失败或函数不存在时静默返回（旧系统兼容）。
+     */
+    private function setPreferredAppMode(int $mode): void
+    {
+        if ($this->uxtheme === null) {
+            return;
+        }
+        try {
+            $this->uxtheme->SetPreferredAppMode($mode);
+        } catch (\Throwable $e) {
+            // 函数不存在或调用失败，静默跳过
+        }
+    }
+
+    /**
+     * 设置窗口标题栏深色模式（覆盖父类空实现）。
+     *
+     * 通过 DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE=20) 让
+     * 标题栏跟随深色模式。Win10 1809+ 用 attr=20，旧版本用 attr=19。
+     *
+     * @param int $hwnd 窗口句柄（int）。
+     * @param bool $dark true=深色标题栏，false=浅色标题栏。
+     */
+    public function setWindowDarkMode(int $hwnd, bool $dark): void
+    {
+        if ($this->dwmapi === null) {
+            return;
+        }
+
+        // HWND 跨作用域：int → dwmapi 作用域 void*（需 INT_TO_PTR，已在 DWMAPI_HEADER 声明）
+        $hwndC = $this->intToPtrIn($this->dwmapi, $hwnd);
+
+        // BOOL 值（int）：1=深色，0=浅色。用 int[1] 数组便于取地址。
+        $value = $dark ? 1 : 0;
+
+        // 优先尝试 attr=20（Win10 1809+），失败再尝试 attr=19（旧版本）
+        foreach ([self::DWMWA_USE_IMMERSIVE_DARK_MODE, self::DWMWA_USE_IMMERSIVE_DARK_MODE_OLD] as $attr) {
+            try {
+                $boolVar = $this->dwmapi->new('int[1]');
+                $boolVar[0] = $value;
+                $hr = (int) $this->dwmapi->DwmSetWindowAttribute(
+                    $hwndC,
+                    $attr,
+                    \FFI::addr($boolVar[0]),
+                    4 // sizeof(int) = 4
+                );
+                // S_OK = 0 成功；非 0 失败则尝试下一个 attr
+                if ($hr === 0) {
+                    return;
+                }
+            } catch (\Throwable $e) {
+                // 旧版本 attr 不支持，尝试下一个
+                continue;
+            }
         }
     }
 
@@ -774,6 +1094,13 @@ typedef struct tagNMHDR {
     UINT_PTR idFrom;
     UINT     code;   // 通知码（int 范围，TCN_SELCHANGE=-551 需用有符号比较）
 } NMHDR;
+
+// UpDown 控件通知结构（UDN_DELTAPOS）
+typedef struct _NM_UPDOWN {
+    NMHDR hdr;
+    int   iPos;   // 当前位置
+    int   iDelta; // 增量（+1 或 -1）
+} NMUPDOWN;
 
 // ListView 项结构（LVITEMW）
 typedef struct tagLVITEMW {
@@ -918,6 +1245,8 @@ LONG_PTR GetWindowLongPtrW(HWND hWnd, int nIndex);
 LONG_PTR SetWindowLongPtrW(HWND hWnd, int nIndex, LONG_PTR dwNewLong);
 HWND    GetForegroundWindow(void);
 HWND    SetParent(HWND hWndChild, HWND hWndNewParent);
+HWND    GetParent(HWND hWnd);
+HWND    GetWindow(HWND hWnd, UINT uCmd);
 BOOL    SetMenu(HWND hWnd, HMENU hMenu);
 int     GetSystemMetrics(int nIndex);
 HCURSOR LoadCursorW(HINSTANCE hInstance, UINT_PTR lpCursorName);
@@ -1053,8 +1382,14 @@ typedef unsigned int UINT;
 typedef int BOOL;
 typedef unsigned short wchar_t;
 typedef const wchar_t* LPCWSTR;
+typedef unsigned long long ULONG_PTR;
+typedef void* HANDLE;
+typedef void* LPVOID;
+typedef wchar_t* LPWSTR;
 
-HMODULE GetModuleHandleW(LPCWSTR lpModuleName);
+/* int↔指针 联合体（与 user32/gdi32 作用域内同名，但本作用域专用） */
+typedef union { long long i; void* p; } INT_TO_PTR;
+
 void*   GetProcAddress(HMODULE hModule, const char* lpProcName);
 void    ExitProcess(UINT uExitCode);
 DWORD   GetLastError(void);
@@ -1064,6 +1399,24 @@ void*   GlobalAlloc(UINT uFlags, DWORD dwBytes);
 char*   GlobalLock(void* hMem);
 BOOL    GlobalUnlock(void* hMem);
 void*   GlobalFree(void* hMem);
+
+/* ---- 激活上下文（Task 3：运行时 manifest 视觉样式激活） ---- */
+typedef struct _ACTCTXW {
+    DWORD       cbSize;
+    DWORD       dwFlags;
+    LPCWSTR     lpSource;
+    unsigned short wProcessorArchitecture;
+    unsigned short wLangId;
+    LPWSTR      lpAssemblyDirectory;
+    LPWSTR      lpResourceName;
+    LPWSTR      lpApplicationName;
+    HMODULE     hModule;
+} ACTCTXW, *PACTCTXW;
+
+HANDLE  CreateActCtxW(PACTCTXW pActCtx);
+BOOL    ActivateActCtx(HANDLE hActCtx, ULONG_PTR *lpCookie);
+BOOL    DeactivateActCtx(DWORD dwFlags, ULONG_PTR ulCookie);
+void    ReleaseActCtx(HANDLE hActCtx);
 C;
 
     /**
@@ -1409,6 +1762,36 @@ Status  GdipDrawImageRectRect(GpGraphics* graphics, GpImage* image,
     float dstx, float dsty, float dstwidth, float dstheight,
     float srcx, float srcy, float srcwidth, float srcheight,
     int srcUnit, void* imageAttributes, void* callback, void* callbackData);
+C;
+
+    /**
+     * uxtheme.dll 头声明（Task 4：深色模式）。
+     *
+     * SetPreferredAppMode 是未文档化导出（ordinal 135），Win10 1809+ 才有。
+     * mode: 0=Default, 1=AllowDark, 2=ForceDark, 3=ForceLight。
+     * 旧系统 cdef 加载此声明会失败（函数不存在），loadOptionalFfi 返回 null。
+     */
+    private const UXTHEME_HEADER = <<<C
+int SetPreferredAppMode(int mode);
+C;
+
+    /**
+     * dwmapi.dll 头声明（Task 4：标题栏深色模式）。
+     *
+     * DwmSetWindowAttribute 设置 DWMWA_USE_IMMERSIVE_DARK_MODE=20
+     * （Win10 1809+，旧版本用 19）使标题栏跟随深色模式。
+     */
+    private const DWMAPI_HEADER = <<<C
+typedef void* HWND;
+typedef unsigned long DWORD;
+typedef long HRESULT;
+typedef const void* LPCVOID;
+typedef int BOOL;
+
+/* int↔指针 联合体（本作用域专用，供 intToPtrIn 转换 HWND） */
+typedef union { long long i; void* p; } INT_TO_PTR;
+
+HRESULT DwmSetWindowAttribute(HWND hwnd, DWORD attr, LPCVOID pvAttribute, DWORD cbAttribute);
 C;
 
     // ============================================================
@@ -1785,7 +2168,37 @@ C;
             );
         }
 
+        // Task 6：非 CLASSIC 主题创建现代字体（Segoe UI 9pt）。
+        // controlCreate 创建控件后通过 SendMessageW(WM_SETFONT) 应用，
+        // 使按钮/输入框等控件使用现代字体而非系统默认位图字体。
+        if ($this->currentTheme !== Theme::CLASSIC && $this->hFont === null) {
+            $this->createModernFont();
+        }
+
         $this->classRegistered = true;
+    }
+
+    /**
+     * 创建现代字体（Segoe UI 9pt，gdi32 作用域 HFONT）。
+     *
+     * 字体高度用负值表示按字符高度计算：-12 ≈ 9pt@96dpi。
+     * CData 存 $this->hFont 防 GC，int 值通过 gdiPtrToInt 在应用时转换。
+     */
+    private function createModernFont(): void
+    {
+        $faceName = $this->utf8ToWide('Segoe UI');
+        // 9pt @ 96dpi ≈ 12 像素，负值表示"字符高度"而非"单元格高度"
+        $height = -12;
+        $font = $this->gdi32->CreateFontW(
+            $height, 0, 0, 0,
+            400,   // FW_NORMAL
+            0, 0, 0,
+            1,     // DEFAULT_CHARSET
+            0, 0, 0,
+            0,     // DEFAULT_PITCH | FF_DONTCARE
+            \FFI::addr($faceName[0])
+        );
+        $this->hFont = $font;
     }
 
     /**
@@ -1939,9 +2352,21 @@ C;
             return $this->dispatchWmCommand($hwndInt, $wParam, $lParam);
         }
 
-        // Container 也可能收到子控件（如 Tab）发来的 WM_NOTIFY 通知
-        if ($msg === self::WM_NOTIFY && $this->dispatchWmNotify($lParam)) {
-            return 0;
+        // Container 也可能收到子控件（Slider/UpDown 等）发来的 WM_HSCROLL/WM_VSCROLL
+        if ($msg === self::WM_HSCROLL || $msg === self::WM_VSCROLL) {
+            return $this->dispatchScroll($hwndInt, $msg, $wParam, $lParam);
+        }
+
+        // Container 也可能收到子控件（如 Tab/Table）发来的 WM_NOTIFY 通知
+        // Table 通知（LVN_GETDISPINFO/LVN_ITEMCHANGED/NM_CUSTOMDRAW 等）优先处理
+        if ($msg === self::WM_NOTIFY) {
+            $tableResult = $this->handleTableNotify($lParam);
+            if ($tableResult !== null) {
+                return $tableResult;
+            }
+            if ($this->dispatchWmNotify($lParam)) {
+                return 0;
+            }
         }
 
         return (int) $this->user32->DefWindowProcW($hwnd, $msg, $wParam, $lParam);
@@ -1955,6 +2380,10 @@ C;
         $area = $this->controls[$hwndInt] ?? null;
 
         switch ($msg) {
+            case self::WM_ERASEBKGND:
+                // 抑制背景擦除，由 onDraw 回调完整绘制背景，避免闪屏
+                return 1;
+
             case self::WM_PAINT:
                 $ctx = $this->drawContextCreate($hwndInt);
                 try {
@@ -2340,6 +2769,26 @@ C;
                 return true;
             }
         }
+
+        // UpDown（SpinBox）数值即将变化通知
+        // NMUPDOWN = { NMHDR hdr; int iPos; int iDelta; }
+        // UDN_DELTAPOS 是"即将改变"通知，触发 SpinBox 的 onChanged 回调
+        if ($code === self::UDN_DELTAPOS) {
+            $control = $this->controls[$fromHwnd] ?? null;
+            if ($control instanceof \Kingbes\Ui\Control\SpinBox
+                && $control->onChanged !== null
+            ) {
+                try {
+                    ($control->onChanged)();
+                } catch (\Throwable $e) {
+                    trigger_error(
+                        'onChanged callback error: ' . $e->getMessage(),
+                        \E_USER_WARNING
+                    );
+                }
+                return true;
+            }
+        }
         return false;
     }
 
@@ -2686,13 +3135,17 @@ C;
         } else {
             $rgb = 0x808080;
         }
-        $hbr = $this->user32->CreateSolidBrush($rgb);
+        // CreateSolidBrush/DeleteObject 在 gdi32 作用域；FillRect 在 user32 作用域。
+        // 通过 int 中转把 gdi32 HBRUSH 传给 user32 FillRect（跨作用域 CData 不互通）。
+        $hbrGdi = $this->gdi32->CreateSolidBrush($rgb);
+        $hbrInt = $this->gdiPtrToInt($hbrGdi);
+        $hbrUser = $this->intToPtrIn($this->user32, $hbrInt);
         try {
-            $this->user32->FillRect($hdc, \FFI::addr($blockRect), $hbr);
+            $this->user32->FillRect($hdc, \FFI::addr($blockRect), $hbrUser);
             // 边框
             $this->user32->DrawEdge($hdc, \FFI::addr($blockRect), self::EDGE_SUNKEN, self::BF_RECT);
         } finally {
-            $this->user32->DeleteObject($hbr);
+            $this->gdi32->DeleteObject($hbrGdi);
         }
     }
 
@@ -2726,8 +3179,10 @@ C;
             }
             $buf[$chars] = 0;
 
-            // 文本居中
-            $this->user32->SetBkMode($hdc, 1); // TRANSPARENT
+            // SetBkMode 在 gdi32 作用域，HDC 来自 user32 作用域，通过 int 中转
+            $hdcInt = $this->ptrToInt($hdc);
+            $hdcGdi = $this->intToPtrIn($this->gdi32, $hdcInt);
+            $this->gdi32->SetBkMode($hdcGdi, 1); // TRANSPARENT
             $this->user32->DrawTextW(
                 $hdc,
                 \FFI::addr($buf[0]),
@@ -2743,8 +3198,10 @@ C;
      *
      * 通过 GetMessagePos 获取屏幕坐标，ScreenToClient 转为客户区坐标，
      * LVM_SUBITEMHITTEST 命中测试得到行/列，根据列类型触发对应回调。
+     *
+     * @param int $fromHwnd ListView HWND 的 int 表示（来自 hwndInt）。
      */
-    private function handleTableClick(\Kingbes\Ui\Control\Table $control, \FFI\CData $fromHwnd): void
+    private function handleTableClick(\Kingbes\Ui\Control\Table $control, int $fromHwnd): void
     {
         // GetMessagePos 返回屏幕坐标（低字 x，高字 y，16 位有符号）
         $pos = $this->user32->GetMessagePos();
@@ -2757,7 +3214,8 @@ C;
         $pt = $this->user32->new('POINT');
         $pt->x = $x;
         $pt->y = $y;
-        $this->user32->ScreenToClient($fromHwnd, \FFI::addr($pt));
+        $hwndC = $this->intToHwnd($fromHwnd);
+        $this->user32->ScreenToClient($hwndC, \FFI::addr($pt));
 
         $hti = $this->user32->new('LVHITTESTINFO');
         $hti->pt = $pt;
@@ -2767,10 +3225,10 @@ C;
         $hti->iGroup = -1;
 
         $ret = (int) $this->user32->SendMessageW(
-            $fromHwnd,
+            $hwndC,
             self::LVM_SUBITEMHITTEST,
             0,
-            \FFI::addr($hti)
+            $this->ptrToInt(\FFI::addr($hti))
         );
         if ($ret < 0) {
             return;
@@ -3033,7 +3491,7 @@ C;
             0,
             \FFI::addr($classNameBuf[0]),
             \FFI::addr($titleBuf[0]),
-            self::WS_OVERLAPPEDWINDOW,
+            self::WS_OVERLAPPEDWINDOW | self::WS_CLIPCHILDREN,
             self::CW_USEDEFAULT,
             self::CW_USEDEFAULT,
             $width,
@@ -3049,6 +3507,11 @@ C;
 
         // 设置默认字体
         $this->applyDefaultFont($hwnd);
+
+        // DARK 主题下自动让标题栏变深色（DwmSetWindowAttribute）
+        if ($this->currentTheme === Theme::DARK) {
+            $this->setWindowDarkMode($hwndInt, true);
+        }
 
         return $hwndInt;
     }
@@ -3915,6 +4378,13 @@ C;
 
         // 设置默认字体
         $this->applyDefaultFont($hwnd);
+
+        // Task 6：非 CLASSIC 主题应用现代字体（Segoe UI 9pt）覆盖默认字体。
+        // hFont 是 gdi32 作用域 CData，转 int 后作为 WM_SETFONT 的 WPARAM。
+        if ($this->hFont !== null) {
+            $fontInt = $this->gdiPtrToInt($this->hFont);
+            $this->user32->SendMessageW($hwnd, self::WM_SETFONT, $fontInt, 1);
+        }
 
         $hwndInt = $this->hwndInt($hwnd);
         $this->controlTypes[$hwndInt] = $className;
@@ -5097,7 +5567,7 @@ C;
 
     public function areaInvalidate(int $hwnd): void
     {
-        $this->user32->InvalidateRect($this->intToHwnd($hwnd), null, 1);
+        $this->user32->InvalidateRect($this->intToHwnd($hwnd), null, 0);
     }
 
     /**

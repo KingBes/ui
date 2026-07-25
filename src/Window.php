@@ -207,6 +207,29 @@ class Window
         return $this;
     }
 
+    /**
+     * 设置窗口标题栏深色模式（跨平台）。
+     *
+     * 跨平台行为：
+     *   - Windows 10 1809+：通过 DwmSetWindowAttribute
+     *    (DWMWA_USE_IMMERSIVE_DARK_MODE) 设置标题栏为深色或浅色。
+     *     可覆盖全局 Theme::DARK 设置，实现单窗口浅色。
+     *   - macOS：NSWindow 外观由应用级 NSAppearance 决定（由
+     *     App::setTheme() 经 [NSApp setAppearance:] 统一设置），
+     *     本方法为空实现，单窗口覆盖需直接操作 NSWindow.appearance。
+     *   - GTK：空实现。GTK 深色偏好由 App::setTheme() 经
+     *     gtk-application-prefer-dark-theme 全局设置，无单窗口 API。
+     *
+     * 链式调用在所有平台均正常返回。
+     *
+     * @param bool $dark true=深色标题栏，false=浅色标题栏。
+     */
+    public function setDarkMode(bool $dark): self
+    {
+        App::platform()->setWindowDarkMode($this->hwnd, $dark);
+        return $this;
+    }
+
     public function isFocused(): bool
     {
         return App::platform()->windowIsFocused($this->hwnd);

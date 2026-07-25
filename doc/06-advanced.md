@@ -401,6 +401,113 @@ App::timer(16, function ($id) use (&$last) {  // 60 FPS
 
 ---
 
+## 主题切换（跨平台）
+
+`Kingbes\Ui\Theme` 提供 4 种主题预设，由 `App::setTheme()` 在应用启动前选定。各平台的实现：
+
+- **Windows**：影响 ComCtl32 v6 视觉样式（manifest 激活）、Win10/11 标题栏深色模式（uxtheme `SetPreferredAppMode`）以及控件默认字体。
+- **Linux GTK**：通过 `g_object_set_property` 修改 `GtkSettings` 单例的 `gtk-application-prefer-dark-theme` 布尔属性。`Theme::DARK` 设为 `true` 启用深色偏好；`Theme::LIGHT`/`CLASSIC`/`SYSTEM` 设为 `false`，由 GTK 跟随系统或保持浅色。
+- **macOS Cocoa**：通过 `[NSApp setAppearance:]` 切换应用级 `NSAppearance`。`Theme::DARK` → `NSAppearanceNameDarkAqua`，`Theme::LIGHT` → `NSAppearanceNameAqua`，`Theme::SYSTEM`/`CLASSIC` → `nil`（跟随系统）。
+
+> 说明：`setAppTheme()` 是跨平台 API，三个后端各有具体实现。`Window::setDarkMode()` 仅 Windows 有单窗口标题栏深色实现（`DwmSetWindowAttribute`），GTK 与 macOS 继承空实现——GTK 深色偏好只能全局设置，macOS 窗口外观跟随应用级 `NSAppearance`。
+
+### 主题预设
+
+| 常量 | 值 | 行为 |
+| --- | --- | --- |
+| `Theme::SYSTEM` | `'system'` | 默认值。跟随系统设置，启用 ComCtl32 v6 视觉样式，uxtheme 调用 `SetPreferredAppMode(Default)` |
+| `Theme::CLASSIC` | `'classic'` | 经典外观。不加载 ComCtl32 v6 manifest、不调用 uxtheme，呈现 Windows 9x 时代原生控件外观，适用于远程桌面、低配环境或需要严格一致性输出的场景 |
+| `Theme::DARK` | `'dark'` | 强制深色。启用 ComCtl32 v6，uxtheme 调用 `SetPreferredAppMode(ForceDark)`，控件默认字体为 "Segoe UI" 9pt |
+| `Theme::LIGHT` | `'light'` | 强制浅色。启用 ComCtl32 v6，uxtheme 调用 `SetPreferredAppMode(ForceLight)`，控件默认字体为 "Segoe UI" 9pt |
+
+### App::setTheme()
+
+```php
+use Kingbes\Ui\App;
+use Kingbes\Ui\Theme;
+
+App::setTheme(Theme::DARK);   // 必须在 App::run() 之前
+App::setTheme('dark');        // 等价，直接传字符串也可
+```
+
+调用规则：
+
+- **必须在 `App::run()` 之前、任何 Window/Control 创建之前调用**；否则平台已初始化，仅触发 `E_USER_WARNING` 并忽略
+- 非法值抛 `InvalidArgumentException`
+- 不调用时默认 `Theme::SYSTEM`
+- 调用 `App::getTheme()` 可读取当前已设置的主题（字符串形式）
+
+### Window::setDarkMode()
+
+单独控制某个窗口的标题栏深色（链式调用）：
+
+```php
+$win = new Window("编辑器", 800, 600);
+$win->setDarkMode(true);   // 标题栏变深色
+$win->setDarkMode(false);  // 标题栏变浅色
+```
+
+底层调用 `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)`。Windows 10 1809 之前的版本不支持该属性，调用会静默失败（不抛异常）。已通过 `App::setTheme(Theme::DARK)` 全局启用深色时，可对单个窗口用此方法反向覆盖为浅色。
+
+### CLASSIC 主题兼容场景
+
+`Theme::CLASSIC` 不加载 ComCtl32 v6 manifest，控件使用经典 3D 边框外观，适合：
+
+- 远程桌面 / 终端服务下避免视觉样式渲染开销
+- 截图自动化测试，需要稳定像素对比
+- 与老旧第三方控件混排时减少视觉冲突
+
+### 完整示例
+
+```php
+<?php
+declare(strict_types=1);
+
+require_once __DIR__ . '/vendor/autoload.php';
+
+use Kingbes\Ui\App;
+use Kingbes\Ui\Theme;
+use Kingbes\Ui\Window;
+use Kingbes\Ui\Layout\VBox;
+use Kingbes\Ui\Control\Button;
+use Kingbes\Ui\Control\Label;
+
+// 1. 在创建任何窗口/控件之前设置主题
+App::setTheme(Theme::DARK);
+
+$win = new Window("主题示例", 480, 320);
+$win->onClose = fn() => App::quit();
+$win->setMargined(12);
+
+$root = new VBox($win);
+$label = new Label($root, "当前主题: " . App::getTheme());
+$root->add($label);
+
+// 2. 单窗口反向覆盖为浅色标题栏
+$btn = new Button($root, "浅色标题栏");
+$btn->onClick = fn() => $win->setDarkMode(false);
+$root->add($btn);
+
+$win->setChild($root);
+$win->show();
+App::run();
+```
+
+### 示例文件
+
+每种主题各有一个独立示例，直接运行即可对比效果：
+
+```bash
+php -d ffi.enable=true examples/theme_system.php    # 跟随系统（默认）
+php -d ffi.enable=true examples/theme_classic.php   # 经典灰外观（不加载 ComCtl32 v6）
+php -d ffi.enable=true examples/theme_dark.php      # 强制深色
+php -d ffi.enable=true examples/theme_light.php     # 强制浅色
+```
+
+每个示例在代码顶部硬编码 `App::setTheme(Theme::XXX)`，展示同一组控件（Button/Entry/Checkbox/ComboBox/ProgressBar/Slider）在不同主题下的外观。运行后关闭窗口即可退出，再运行下一个对比。
+
+---
+
 ## 完整应用示例
 
 参见 `examples/full_test.php`，演示了：

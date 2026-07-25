@@ -8,6 +8,7 @@ use Kingbes\Ui\Geometry\Point;
 use Kingbes\Ui\Geometry\Size;
 use Kingbes\Ui\Graphics\Color;
 use Kingbes\Ui\Platform\AbstractPlatform;
+use Kingbes\Ui\Theme;
 use Kingbes\Phpc\Library;
 use Kingbes\Phpc\SafeCall;
 use Kingbes\Phpc\Pointer;
@@ -47,6 +48,14 @@ class GtkPlatform extends AbstractPlatform
 
     /** G_SOURCE_CONTINUE（g_timeout_add 回调返回值） */
     private const G_SOURCE_CONTINUE = 1;
+
+    /**
+     * G_TYPE_BOOLEAN = 5 << 2 = 20。
+     *
+     * G_TYPE_FUNDAMENTAL_SHIFT = 2，G_TYPE_BOOLEAN = 5（fundamental type ID）。
+     * 用于 g_value_init 初始化 GValue 为 boolean 类型。
+     */
+    private const G_TYPE_BOOLEAN = 20;
 
     // ============================================================
     // FFI 实例
@@ -147,6 +156,24 @@ gulong g_signal_connect_data(gpointer instance, const char *detailed_signal,
 
 /* 超时回调 */
 guint g_timeout_add(guint interval, SourceFunc func, gpointer data);
+
+/* GValue：属性设置的类型安全包装（避免 vararg g_object_set）。
+ * PHP FFI 不支持 C vararg，无法直接调用 g_object_set(..., true, null)；
+ * 改用 g_object_set_property + GValue 是标准做法。
+ * G_TYPE_BOOLEAN = 5 << 2 = 20。 */
+typedef struct _GValue {
+    unsigned long g_type;
+    union {
+        int v_int;
+        long long v_int64;
+        double v_double;
+        void* v_pointer;
+    } data[2];
+} GValue;
+void g_value_init(GValue* value, unsigned long g_type);
+void g_value_set_boolean(GValue* value, int v_boolean);
+void g_value_unset(GValue* value);
+void g_object_set_property(void* object, const char* property_name, const GValue* value);
 C;
 
     /**
@@ -214,6 +241,13 @@ void gtk_widget_queue_resize(GtkWidget *widget);
 /* 事件循环 */
 void gtk_main(void);
 void gtk_main_quit(void);
+
+/* GtkSettings：全局 GTK 设置（用于深色主题切换）。
+ * gtk_settings_get_default 返回进程单例 GtkSettings 对象，
+ * 通过 g_object_set_property 修改 "gtk-application-prefer-dark-theme"
+ * 布尔属性即可切换深色/浅色偏好。 */
+typedef struct _GtkSettings GtkSettings;
+GtkSettings* gtk_settings_get_default(void);
 C;
 
     // ============================================================
@@ -860,6 +894,58 @@ C;
     // queueMain 与 triggerRelayout 继承自 AbstractPlatform。
     // wakeUpMainLoop 默认空实现即可：g_timeout_add 的 10ms 轮询会
     // 自动拾取 queueMain 队列，无需主动唤醒阻塞的 gtk_main。
+
+    // ============================================================
+    // 主题
+    // ============================================================
+
+    /**
+     * 设置应用主题。
+     *
+     * GTK 实现：通过 g_object_set_property 修改 GtkSettings 单例的
+     * "gtk-application-prefer-dark-theme" 布尔属性。
+     *
+     *   - Theme::DARK：属性设为 true，GTK 启用深色偏好
+     *   - Theme::LIGHT / Theme::CLASSIC / Theme::SYSTEM：属性设为 false，
+     *     GTK 跟随系统主题或保持浅色
+     *
+     * 注意：PHP FFI 不支持 C vararg，无法直接调用
+     * g_object_set(settings, "gtk-application-prefer-dark-theme", true, null)。
+     * 改用 g_object_set_property + GValue 方案（标准 GLib 做法）：
+     *   1. g_value_init(&value, G_TYPE_BOOLEAN) 初始化 GValue 为 boolean 类型
+     *   2. g_value_set_boolean(&value, preferDark) 写入布尔值
+     *   3. g_object_set_property(settings, name, &value) 设置属性
+     *   4. g_value_unset(&value) 释放 GValue 内部资源
+     *
+     * G_TYPE_BOOLEAN = 5 << 2 = 20（G_TYPE_FUNDAMENTAL_SHIFT = 2，
+     * G_TYPE_BOOLEAN = 5）。
+     */
+    public function setAppTheme(string $theme): void
+    {
+        // 获取 GtkSettings 进程单例
+        $settings = SafeCall::invoke($this->gtk, 'gtk_settings_get_default', []);
+        if ($settings === null) {
+            return;
+        }
+
+        // Theme::DARK 启用深色偏好；其他主题关闭（GTK 跟随系统或保持浅色）
+        $preferDark = ($theme === Theme::DARK) ? 1 : 0;
+
+        // 构造 GValue 包装 boolean 值并设置属性
+        $gvalue = $this->gobj->new('GValue');
+        SafeCall::invoke($this->gobj, 'g_value_init', [
+            \FFI::addr($gvalue), self::G_TYPE_BOOLEAN
+        ]);
+        SafeCall::invoke($this->gobj, 'g_value_set_boolean', [
+            \FFI::addr($gvalue), $preferDark
+        ]);
+        SafeCall::invoke($this->gobj, 'g_object_set_property', [
+            $settings, 'gtk-application-prefer-dark-theme', \FFI::addr($gvalue)
+        ]);
+        SafeCall::invoke($this->gobj, 'g_value_unset', [
+            \FFI::addr($gvalue)
+        ]);
+    }
 
     // ============================================================
     // 系统服务

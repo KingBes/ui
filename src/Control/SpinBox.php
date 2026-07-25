@@ -126,4 +126,23 @@ class SpinBox extends Control
         }
         parent::destroy();
     }
+
+    /**
+     * 偏好高度：Windows 标准输入框高度 23px（SpinBox 主控件为 Edit）。
+     *
+     * 让布局容器在空间充足时给 SpinBox 分配 23px 高度，避免被拉满整格；
+     * 空间不足时回退到均分。
+     */
+    public function getPreferredHeight(): int
+    {
+        return 23;
+    }
+
+    /**
+     * 偏好宽度：0（由容器决定，SpinBox 宽度通常随布局拉伸）。
+     */
+    public function getPreferredWidth(): int
+    {
+        return 0;
+    }
 }

@@ -89,6 +89,7 @@ php hello.php
 - **菜单**：菜单栏、弹出菜单、子菜单、勾选状态、图标
 - **对话框**：消息框、文件打开/保存、文件夹选择、颜色选择、字体选择
 - **系统托盘**：托盘图标、气球通知、右键菜单、点击/双击事件
+- **主题切换（Windows 特有）**：系统/经典/深色/浅色，含单窗口深色标题栏覆盖
 - **系统集成**：剪贴板、屏幕尺寸、进程管理
 
 ## 文档
@@ -120,6 +121,13 @@ php examples/table_test.php
 
 # 高级绘图（路径/渐变/变换/裁剪）
 php examples/graphics_advanced_test.php
+
+# 主题与视觉样式（Windows 特有：system/classic/dark/light）
+# 4 个独立示例，分别对应一种主题，运行后直接看效果
+php examples/theme_system.php    # 跟随系统（默认）
+php examples/theme_classic.php   # 经典灰外观
+php examples/theme_dark.php      # 强制深色
+php examples/theme_light.php     # 强制浅色
 ```
 
 ## 项目结构

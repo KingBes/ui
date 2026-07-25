@@ -70,6 +70,14 @@ class Process
     private int $exitCode = -1;
 
     /**
+     * stdout 不完整行缓冲区。
+     *
+     * stream_select + fread 读取的数据追加到此缓冲区，按 \n 分割：
+     * 完整行触发 onLine 回调，剩余不完整行留待下次读取或 EOF 时 flush。
+     */
+    private string $stdoutBuffer = '';
+
+    /**
      * 每行 stdout 回调（在主线程同步执行）。
      */
     private ?\Closure $onLine = null;
@@ -149,56 +157,148 @@ class Process
     private function pollOnce(): bool
     {
         if (!is_resource($this->proc)) {
-            $this->running = false;
-            $this->callExit($this->exitCode);
+            $this->handleEof();
             return false;
         }
 
-        // 读 stdout：非阻塞，无数据时 feof=false 但 fgets=false，break 退出本轮
+        // 读 stdout：非阻塞 stream_select + fread，可能检测到 EOF 并触发 handleEof
         $this->drainStdout();
+
+        // drainStdout 已检测到 EOF 并处理退出，停止轮询
+        if (!$this->running) {
+            return false;
+        }
 
         // 检查进程状态：proc_get_status 首次返回 running=false 时携带 exitcode
         $status = proc_get_status($this->proc);
         if (!$status['running']) {
             $this->exitCode = $status['exitcode'];
-            $this->running = false;
-            // 进程退出后再读一次，确保 stdout 缓冲区的最后一行不丢失
-            $this->drainStdout();
-            $this->closeResources();
-            $this->callExit($this->exitCode);
+            $this->handleEof();
             return false;
         }
         return true;
     }
 
     /**
-     * 非阻塞读取 stdout 所有可用行，每行调用 onLine 回调。
+     * 非阻塞读取 stdout 所有可用数据，按 \n 分割行后调用 onLine 回调。
      *
-     * feof=true 表示流已关闭（EOF）；fgets=false 表示暂无数据或已到 EOF。
-     * 循环退出条件：fgets 返回 false（无数据可读）。
+     * 使用 stream_select($read, $write, $except, 0) + fread($pipe, 4096) 组合
+     * 读取，避免 Windows 下 fgets 在无完整行时阻塞主事件循环。读取的数据追加
+     * 到 $stdoutBuffer，按 \n 分割：完整行触发 onLine，剩余不完整行留在缓冲区。
+     *
+     * EOF 处理：stream_select 返回可读但 fread 返回空字符串时判定子进程结束，
+     * 先 flush 缓冲区剩余数据为最后一行，再触发 onExit（经 handleEof）。
+     *
+     * 非阻塞：stream_select 返回 0 可读时立即退出，不等待数据。
      */
     private function drainStdout(): void
     {
         if (!isset($this->pipes[1]) || !is_resource($this->pipes[1])) {
             return;
         }
-        while (!feof($this->pipes[1])) {
-            $line = fgets($this->pipes[1]);
-            if ($line === false) {
-                break;
+
+        $pipe = $this->pipes[1];
+
+        while (true) {
+            $read = [$pipe];
+            $write = null;
+            $except = null;
+
+            // 非阻塞 poll：超时 0，立即返回可读性
+            $selected = stream_select($read, $write, $except, 0);
+
+            if ($selected === false) {
+                // stream_select 出错，退出本轮
+                return;
             }
-            $line = rtrim($line, "\r\n");
-            if ($this->onLine !== null) {
-                try {
-                    ($this->onLine)($line);
-                } catch (\Throwable $e) {
-                    trigger_error(
-                        'Process onLine callback error: ' . $e->getMessage(),
-                        \E_USER_WARNING
-                    );
-                }
+
+            if ($selected === 0) {
+                // 无数据可读，立即退出避免阻塞主事件循环
+                return;
+            }
+
+            // 管道可读，读取最多 4096 字节
+            $data = fread($pipe, 4096);
+
+            if ($data === false) {
+                // 读取出错，退出本轮
+                return;
+            }
+
+            if ($data === '') {
+                // stream_select 报告可读但 fread 返回空字符串 = EOF，子进程已结束
+                // 先 flush 缓冲区剩余数据为最后一行，再触发退出流程
+                $this->flushStdoutBuffer();
+                $this->handleEof();
+                return;
+            }
+
+            // 追加到缓冲区并按 \n 分割完整行
+            $this->stdoutBuffer .= $data;
+            while (($pos = strpos($this->stdoutBuffer, "\n")) !== false) {
+                $line = substr($this->stdoutBuffer, 0, $pos);
+                $this->stdoutBuffer = substr($this->stdoutBuffer, $pos + 1);
+                // 去除行尾 \r（CRLF 换行）
+                $line = rtrim($line, "\r");
+                $this->dispatchLine($line);
             }
         }
+    }
+
+    /**
+     * 将 stdoutBuffer 中剩余的不完整行作为最后一行触发 onLine 回调。
+     */
+    private function flushStdoutBuffer(): void
+    {
+        if ($this->stdoutBuffer === '') {
+            return;
+        }
+        $line = rtrim($this->stdoutBuffer, "\r");
+        $this->stdoutBuffer = '';
+        $this->dispatchLine($line);
+    }
+
+    /**
+     * 分发一行 stdout 给 onLine 回调（异常不中断主循环）。
+     */
+    private function dispatchLine(string $line): void
+    {
+        if ($this->onLine === null) {
+            return;
+        }
+        try {
+            ($this->onLine)($line);
+        } catch (\Throwable $e) {
+            trigger_error(
+                'Process onLine callback error: ' . $e->getMessage(),
+                \E_USER_WARNING
+            );
+        }
+    }
+
+    /**
+     * 统一的进程退出处理（幂等，可由 drainStdout EOF 或 pollOnce proc_get_status 触发）。
+     *
+     * 流程：尝试读取管道剩余数据 → flush 缓冲区 → 关闭资源 → 触发 onExit。
+     * 通过 running 标志保证只触发一次。
+     */
+    private function handleEof(): void
+    {
+        // 幂等：已处理过则直接返回
+        if (!$this->running) {
+            return;
+        }
+
+        // 先标记为已停止，防止 drainStdout 递归调用 handleEof 时重复触发
+        $this->running = false;
+
+        // 尝试读取管道剩余数据（defensive：proc_get_status 路径下可能仍有未读数据）
+        $this->drainStdout();
+        // flush 缓冲区中剩余的不完整行
+        $this->flushStdoutBuffer();
+
+        $this->closeResources();
+        $this->callExit($this->exitCode);
     }
 
     /**

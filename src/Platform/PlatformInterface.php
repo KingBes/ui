@@ -672,4 +672,56 @@ interface PlatformInterface
      * 注册退出确认回调。回调返回 false 则不退出。
      */
     public function onShouldQuit(?\Closure $cb): void;
+
+    // ============================================================
+    // 主题与视觉样式（Windows 特有，其他平台空实现）
+    //
+    // 本节方法仅 Windows 平台有具体实现（ComCtl32 v6 manifest 激活、
+    // PerMonitorV2 DPI 感知、uxtheme 深色模式、DWM 标题栏深色）。
+    // Linux GTK 和 macOS Cocoa 各自有完整的主题系统（GTK Theme /
+    // NSAppearance），不需要 manifest 激活机制，继承空实现即可。
+    // 后续 GTK/Cocoa 可独立设计各自的主题 API，不受本节契约约束。
+    // ============================================================
+
+    /**
+     * 启用视觉样式（Windows 特有）。
+     *
+     * Windows：运行时创建激活上下文（CreateActCtxW + ActivateActCtx），
+     * 加载 ComCtl32 v6 manifest，启用 PerMonitorV2 DPI 感知。
+     * 幂等：已激活则直接返回。
+     *
+     * 其他平台：空实现。
+     */
+    public function enableVisualStyles(): void;
+
+    /**
+     * 设置应用主题（跨平台）。
+     *
+     * 跨平台行为：
+     *   - Windows：根据主题值决定是否启用视觉样式（ComCtl32 v6 manifest），
+     *     并通过 uxtheme SetPreferredAppMode 强制深色/浅色。
+     *   - GTK：通过 g_object_set_property 修改 GtkSettings 的
+     *     "gtk-application-prefer-dark-theme" 属性切换深色偏好
+     *    （Theme::DARK=true，其他=false，由 GTK 跟随系统或保持浅色）。
+     *   - Cocoa：通过 [NSApp setAppearance:] 切换 NSAppearance
+     *     （DARK=NSAppearanceNameDarkAqua，LIGHT=NSAppearanceNameAqua，
+     *     SYSTEM/CLASSIC=nil 跟随系统）。
+     *
+     * @param string $theme 主题值（见 \Kingbes\Ui\Theme 常量）。
+     */
+    public function setAppTheme(string $theme): void;
+
+    /**
+     * 设置窗口标题栏深色模式（Windows 特有）。
+     *
+     * Windows 10 1809+：通过 DwmSetWindowAttribute
+     * (DWMWA_USE_IMMERSIVE_DARK_MODE) 设置标题栏深色。
+     * 旧版本静默失败。
+     *
+     * 其他平台：空实现。
+     *
+     * @param int  $hwnd 窗口句柄。
+     * @param bool $dark true=深色标题栏，false=浅色标题栏。
+     */
+    public function setWindowDarkMode(int $hwnd, bool $dark): void;
 }

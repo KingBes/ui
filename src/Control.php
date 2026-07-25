@@ -200,4 +200,26 @@ abstract class Control
     {
         return $this->parent?->getHwnd() ?? 0;
     }
+
+    /**
+     * 控件偏好宽度（像素）。返回 0 表示无偏好，由容器决定。
+     *
+     * 子类可重写以提供固有宽度（如固定尺寸控件）。布局容器在空间
+     * 充足时会优先满足该尺寸；空间不足或为 0 时回退到均分。
+     */
+    public function getPreferredWidth(): int
+    {
+        return 0;
+    }
+
+    /**
+     * 控件偏好高度（像素）。返回 0 表示无偏好，由容器决定。
+     *
+     * 子类可重写以提供固有高度（如 Button=23、Label=17）。布局容器
+     * 在空间充足时会优先满足该尺寸；空间不足或为 0 时回退到均分。
+     */
+    public function getPreferredHeight(): int
+    {
+        return 0;
+    }
 }
