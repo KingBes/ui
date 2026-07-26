@@ -2,7 +2,8 @@
     "name": "kingbes/ui",
     "description": "基于php-phpc的FFI安全库实现的跨平台GUI库",
     "require": {
-        "kingbes/phpc": "^0.0.2"
+        "kingbes/phpc": "^0.0.2",
+        "ext-mbstring": "*"
     },
     "type": "library",
     "license": "MIT",

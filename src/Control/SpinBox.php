@@ -51,7 +51,7 @@ class SpinBox extends Control
             'Edit',
             '0',
             self::ES_AUTOHSCROLL | self::ES_NUMBER | self::WS_TABSTOP,
-            self::WS_EX_CLIENTEDGE,
+            0,
             $this->parentHwnd(),
             0
         );
@@ -103,10 +103,15 @@ class SpinBox extends Control
 
     /**
      * 设置当前值。
+     *
+     * 注意：UDS_SETBUDDYINT 在 ComCtl32 v6 + SetWindowTheme("Explorer")
+     * 环境下不生效（UpDown 不会自动更新 buddy Edit 的文本），
+     * 因此在 UDM_SETPOS 后手动同步 Edit 文本。
      */
     public function setValue(int $value): void
     {
         App::platform()->controlSetValue($this->updownHwnd, $value);
+        App::platform()->controlSetText($this->hwnd, (string)$value);
     }
 
     /**

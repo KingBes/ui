@@ -36,7 +36,7 @@ use Kingbes\Phpc\Library;
  * 关键设计：
  *   - 所有文本 API 使用 Unicode W 系列（RegisterClassExW/CreateWindowExW/
  *     DefWindowProcW/PeekMessageW/SendMessageW/SetWindowTextW 等），支持中文与 emoji。
- *   - 字符串处理：PHP UTF-8 ↔ UTF-16LE（mb_convert_encoding），FFI 用 wchar_t[]。
+ *   - 字符串处理：PHP UTF-8 ↔ UTF-16LE（self::conv 回退链 mb_convert_encoding → iconv），FFI 用 wchar_t[]。
  *   - 所有句柄对外用 int 传递，内部用 INT_TO_PTR 联合体完成 int↔HWND 转换。
  *   - WindowProc 闭包存于 $this->windowProc 属性防 GC 回收导致崩溃。
  *   - 主循环用 PeekMessageW 非阻塞轮询 + usleep(1000)，保证定时器/queueMain 执行。
@@ -196,7 +196,7 @@ class WindowsPlatform extends AbstractPlatform
 
     // ComboBox 消息
     private const CB_ADDSTRING     = 0x0143;
-    private const CB_DELETESTRING  = 0x0154;
+    private const CB_DELETESTRING  = 0x0144;
     private const CB_RESETCONTENT  = 0x014B;
     private const CB_GETCURSEL     = 0x0147;
     private const CB_SETCURSEL     = 0x014E;
@@ -204,7 +204,7 @@ class WindowsPlatform extends AbstractPlatform
     // ListBox 消息
     private const LB_ADDSTRING     = 0x0180;
     private const LB_DELETESTRING  = 0x0182;
-    private const LB_RESETCONTENT  = 0x0185;
+    private const LB_RESETCONTENT  = 0x0184;
     private const LB_GETCURSEL      = 0x0188;
     private const LB_SETCURSEL      = 0x0186;
 
@@ -408,9 +408,14 @@ class WindowsPlatform extends AbstractPlatform
     private const COLOR_WINDOWTEXT = 8;
 
     // DrawTextW 格式标志
-    private const DT_CENTER     = 0x00000001;
-    private const DT_VCENTER    = 0x00000004;
-    private const DT_SINGLELINE = 0x00000020;
+    private const DT_CENTER      = 0x00000001;
+    private const DT_VCENTER     = 0x00000004;
+    private const DT_SINGLELINE  = 0x00000020;
+    private const DT_CALCRECT    = 0x00000400;
+    private const DT_END_ELLIPSIS = 0x00008000;
+
+    // LVM_SETCOLUMNWIDTH（Task 7：tableSetColumnWidth）
+    private const LVM_SETCOLUMNWIDTH = 0x101E; // LVM_FIRST + 30
 
     // SCROLLINFO fMask
     private const SIF_RANGE           = 0x0001;
@@ -523,6 +528,12 @@ class WindowsPlatform extends AbstractPlatform
     private const DWMWA_USE_IMMERSIVE_DARK_MODE      = 20;
     private const DWMWA_USE_IMMERSIVE_DARK_MODE_OLD  = 19;
 
+    /** DwmSetWindowAttribute 属性 ID：窗口圆角偏好（Win11 22000+，1=不圆角 2=圆角） */
+    private const DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+
+    /** DwmSetWindowAttribute 属性 ID：系统背景类型（Win11 22000+，2=Mica 3=Acrylic 4=Tabbed） */
+    private const DWMWA_SYSTEMBACKDROP_TYPE = 38;
+
     /**
      * 运行时 manifest XML 模板：ComCtl32 v6 依赖。
      *
@@ -546,6 +557,18 @@ class WindowsPlatform extends AbstractPlatform
       />
     </dependentAssembly>
   </dependency>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Win10/11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <!-- Win8.1 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6cc0b7e}"/>
+      <!-- Win8 -->
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/>
+      <!-- Win7 -->
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>
+    </application>
+  </compatibility>
 </assembly>
 XML;
 
@@ -648,8 +671,17 @@ XML;
     /** 激活上下文 cookie（ULONG_PTR，DeactivateActCtx 用）。 */
     private $actCtxCookie = 0;
 
-    /** uxtheme.dll FFI 实例（SetPreferredAppMode 深色模式；旧系统可能加载失败）。 */
+    /** uxtheme.dll FFI 实例（视觉样式 API：OpenThemeData/DrawThemeBackground 等）。 */
     private ?\FFI $uxtheme = null;
+
+    /**
+     * uxtheme.dll FFI 实例（仅 SetPreferredAppMode 深色模式偏好）。
+     *
+     * 单独加载：SetPreferredAppMode 是 ordinal 135 未文档化导出，
+     * 旧系统 cdef 按名称解析会失败，导致整个 uxtheme 不可用；
+     * 拆分后视觉样式 API 仍可独立加载。
+     */
+    private ?\FFI $uxthemeDark = null;
 
     /** dwmapi.dll FFI 实例（DwmSetWindowAttribute 标题栏深色；旧系统可能加载失败）。 */
     private ?\FFI $dwmapi = null;
@@ -754,11 +786,14 @@ XML;
         // 初始化 GDI+（彩色 emoji 渲染必需，否则所有 GDI+ 函数返回错误）
         $this->initGdiplus();
 
-        // 动态加载 uxtheme.dll / dwmapi.dll（Task 4：深色模式）。
+        // 动态加载 uxtheme.dll / dwmapi.dll（Task 3/4：视觉样式 + 深色模式）。
         // 旧系统（XP/2000）可能没有这两个 DLL 或缺失部分导出函数，
         // 用 \FFI::cdef 直接加载并捕获异常静默失败，保证向后兼容。
-        $this->uxtheme = $this->loadOptionalFfi('uxtheme.dll', self::UXTHEME_HEADER);
-        $this->dwmapi  = $this->loadOptionalFfi('dwmapi.dll',  self::DWMAPI_HEADER);
+        // uxtheme 拆分为两个 cdef：标准视觉样式 API 与 SetPreferredAppMode
+        // （后者 ordinal 135 未文档化导出，按名称解析失败会让整个 cdef 失败）。
+        $this->uxtheme     = $this->loadOptionalFfi('uxtheme.dll', self::UXTHEME_HEADER);
+        $this->uxthemeDark = $this->loadOptionalFfi('uxtheme.dll', self::UXTHEME_DARK_HEADER);
+        $this->dwmapi      = $this->loadOptionalFfi('dwmapi.dll',  self::DWMAPI_HEADER);
     }
 
     /**
@@ -971,15 +1006,15 @@ XML;
      * 调用 uxtheme SetPreferredAppMode 设置应用深色/浅色偏好。
      *
      * mode: 0=Default, 1=AllowDark, 2=ForceDark, 3=ForceLight。
-     * uxtheme.dll 加载失败或函数不存在时静默返回（旧系统兼容）。
+     * uxthemeDark.dll 加载失败或函数不存在时静默返回（旧系统兼容）。
      */
     private function setPreferredAppMode(int $mode): void
     {
-        if ($this->uxtheme === null) {
+        if ($this->uxthemeDark === null) {
             return;
         }
         try {
-            $this->uxtheme->SetPreferredAppMode($mode);
+            $this->uxthemeDark->SetPreferredAppMode($mode);
         } catch (\Throwable $e) {
             // 函数不存在或调用失败，静默跳过
         }
@@ -1025,6 +1060,69 @@ XML;
                 // 旧版本 attr 不支持，尝试下一个
                 continue;
             }
+        }
+    }
+
+    /**
+     * 设置窗口圆角偏好（Win11 22000+）。
+     *
+     * 通过 DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE=33)：
+     * - $round=true  → DWMWCP_ROUND=2（圆角）
+     * - $round=false → DWMWCP_DONOTROUND=1（直角）
+     *
+     * 旧版 Windows（Win10 及以下）无此属性，FFI 调用会抛异常或返回错误码，
+     * 静默降级到系统默认（直角），不影响功能。
+     */
+    private function setWindowCornerPreference(int $hwnd, bool $round): void
+    {
+        if ($this->dwmapi === null) {
+            return;
+        }
+        try {
+            $hwndC = $this->intToPtrIn($this->dwmapi, $hwnd);
+            $pref = $this->dwmapi->new('int[1]');
+            $pref[0] = $round ? 2 : 1; // DWMWCP_ROUND=2, DWMWCP_DONOTROUND=1
+            $this->dwmapi->DwmSetWindowAttribute(
+                $hwndC,
+                self::DWMWA_WINDOW_CORNER_PREFERENCE,
+                \FFI::addr($pref[0]),
+                4
+            );
+        } catch (\Throwable $e) {
+            // 旧版 Windows 无此属性，静默降级
+        }
+    }
+
+    /**
+     * 设置窗口 Mica 云母背景（Win11 22000+）。
+     *
+     * 通过 DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE=38)：
+     * - $enable=true  → DWMSBT_MAINWINDOW=2（Mica）
+     * - $enable=false → DWMSBT_NONE=1（无系统背景）
+     *
+     * 注意：Mica 需要窗口客户区背景透明才能透出。配合
+     * registerWindowClass 中非 CLASSIC 主题使用 NULL hbrBackground，
+     * 让 DWM 的 Mica 透过客户区显示。旧版 Windows 无此属性静默降级。
+     */
+    private function setWindowMica(int $hwnd, bool $enable): void
+    {
+        if ($this->dwmapi === null) {
+            return;
+        }
+        try {
+            $hwndC = $this->intToPtrIn($this->dwmapi, $hwnd);
+            $backdrop = $this->dwmapi->new('int[1]');
+            // DWMSBT_AUTO=0, DWMSBT_NONE=1, DWMSBT_MAINWINDOW=2(Mica),
+            // DWMSBT_TRANSIENTWINDOW=3(Acrylic), DWMSBT_TABBEDWINDOW=4
+            $backdrop[0] = $enable ? 2 : 1;
+            $this->dwmapi->DwmSetWindowAttribute(
+                $hwndC,
+                self::DWMWA_SYSTEMBACKDROP_TYPE,
+                \FFI::addr($backdrop[0]),
+                4
+            );
+        } catch (\Throwable $e) {
+            // 旧版 Windows 无此属性，静默降级
         }
     }
 
@@ -1347,6 +1445,7 @@ typedef void* HGDIOBJ;
 typedef void* HPEN;
 typedef void* HBRUSH;
 typedef void* HFONT;
+typedef void* HBITMAP;
 typedef unsigned short wchar_t;
 typedef const char* LPCSTR;
 typedef const wchar_t* LPCWSTR;
@@ -1369,6 +1468,13 @@ BOOL    Ellipse(HDC hdc, int nLeftRect, int nTopRect, int nRightRect, int nBotto
 BOOL    TextOutW(HDC hdc, int nXStart, int nYStart, LPCWSTR lpString, int cbString);
 DWORD   SetTextColor(HDC hdc, DWORD crColor);
 int     SetBkMode(HDC hdc, int iBkMode);
+
+/* ---- 双缓冲（消除 Area 自定义绘图闪屏） ---- */
+HDC     CreateCompatibleDC(HDC hdc);
+HBITMAP CreateCompatibleBitmap(HDC hdc, int nWidth, int nHeight);
+BOOL    BitBlt(HDC hdcDest, int nXDest, int nYDest, int nWidth, int nHeight,
+               HDC hdcSrc, int nXSrc, int nYSrc, DWORD dwRop);
+BOOL    DeleteDC(HDC hdc);
 C;
 
     /**
@@ -1765,13 +1871,55 @@ Status  GdipDrawImageRectRect(GpGraphics* graphics, GpImage* image,
 C;
 
     /**
-     * uxtheme.dll 头声明（Task 4：深色模式）。
+     * uxtheme.dll 头声明（Task 3：视觉样式 API）。
+     *
+     * 视觉样式 API（OpenThemeData/DrawThemeBackground/...）让 Table 自绘单元格
+     * （checkbox/button/progress）按当前主题渲染，呈现 Win11 现代外观。
+     * SetWindowTheme 对 ListView/TreeView 应用 "Explorer" 子样式（资源管理器
+     * 风格的浅色高亮、Windows 11 圆角行选择）。
+     *
+     * 注意：本 cdef 是独立作用域，需在内部重新声明用到的所有类型
+     * （HWND/HDC/LPCWSTR/RECT/DWORD/wchar_t 等），与 user32 作用域不互通。
+     * HTHEME 是 HANDLE，用 void* 表示；NULL 通过 PHP null 传入。
+     *
+     * 历史问题：原 UXTHEME_HEADER 同时包含 SetPreferredAppMode（ordinal 135，
+     * 未文档化导出，PHP FFI 按名称解析失败），导致整个 cdef 失败，视觉样式
+     * API 全部不可用。现拆分为 UXTHEME_HEADER（标准 API）+ UXTHEME_DARK_HEADER
+     * （SetPreferredAppMode），独立加载。
+     */
+    private const UXTHEME_HEADER = <<<C
+typedef void* HWND;
+typedef void* HDC;
+typedef void* HTHEME;
+typedef unsigned long DWORD;
+typedef long HRESULT;
+typedef int BOOL;
+typedef int LONG;
+typedef unsigned short wchar_t;
+typedef const wchar_t* LPCWSTR;
+typedef struct tagRECT { LONG left; LONG top; LONG right; LONG bottom; } RECT;
+
+/* int↔指针 联合体（本作用域专用，供 intToPtrIn 转换 HWND/HDC） */
+typedef union { long long i; void* p; } INT_TO_PTR;
+
+HRESULT SetWindowTheme(HWND hwnd, LPCWSTR pszSubAppName, LPCWSTR pszSubIdList);
+HTHEME  OpenThemeData(HWND hwnd, LPCWSTR pszClassList);
+HRESULT CloseThemeData(HTHEME hTheme);
+HRESULT DrawThemeBackground(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, const RECT* pRect, const RECT* pClipRect);
+HRESULT DrawThemeText(HTHEME hTheme, HDC hdc, int iPartId, int iStateId, LPCWSTR pszText, int iCharCount, DWORD dwTextFlags, DWORD dwTextFlags2, const RECT* pRect);
+BOOL    IsThemeActive(void);
+BOOL    IsAppThemed(void);
+C;
+
+    /**
+     * uxtheme.dll 头声明（Task 4：仅 SetPreferredAppMode 深色模式偏好）。
      *
      * SetPreferredAppMode 是未文档化导出（ordinal 135），Win10 1809+ 才有。
      * mode: 0=Default, 1=AllowDark, 2=ForceDark, 3=ForceLight。
-     * 旧系统 cdef 加载此声明会失败（函数不存在），loadOptionalFfi 返回 null。
+     * 旧系统 cdef 加载此声明会失败（按名称解析不到），loadOptionalFfi 返回 null，
+     * 此时不影响视觉样式 API（UXTHEME_HEADER 独立加载）。
      */
-    private const UXTHEME_HEADER = <<<C
+    private const UXTHEME_DARK_HEADER = <<<C
 int SetPreferredAppMode(int mode);
 C;
 
@@ -1852,7 +2000,7 @@ C;
     /**
      * 在指定 FFI 作用域将 void* 指针转为 int（用于跨作用域指针传递）。
      */
-    private function ptrToIntIn(\FFI $ffi, \FFI\CData $ptr): int
+    public function ptrToIntIn(\FFI $ffi, \FFI\CData $ptr): int
     {
         $c = $ffi->new('INT_TO_PTR');
         $c->p = $ptr;
@@ -1959,6 +2107,32 @@ C;
     // ============================================================
 
     /**
+     * 编码转换回退链：mb_convert_encoding → iconv → 原字符串。
+     *
+     * mbstring 扩展未加载时自动回退到 iconv（本仓库运行环境不一定
+     * 启用 mbstring，iconv 由 PHP 核心捆绑，始终可用）。iconv 仍失败
+     * 则返回原字符串（最坏情况，调用方应能处理）。
+     *
+     * 用 self::conv() / WindowsPlatform::conv() 替代直接调用
+     * mb_convert_encoding，确保无 mbstring 环境下不崩溃。
+     *
+     * @param string $s    待转换字符串。
+     * @param string $to   目标编码（如 'UTF-16LE'）。
+     * @param string $from 源编码（如 'UTF-8'）。
+     */
+    public static function conv(string $s, string $to, string $from): string
+    {
+        if (function_exists('mb_convert_encoding')) {
+            return \mb_convert_encoding($s, $to, $from);
+        }
+        $r = @iconv($from, $to, $s);
+        if ($r !== false) {
+            return $r;
+        }
+        return $s;
+    }
+
+    /**
      * UTF-8 字符串 → wchar_t[] CData（含 \0 终止）。
      *
      * owned=false 确保缓冲在进程内常驻，避免 FFI 回收后悬空指针。
@@ -1966,7 +2140,7 @@ C;
      */
     private function utf8ToWide(string $utf8): \FFI\CData
     {
-        $wide = mb_convert_encoding($utf8, 'UTF-16LE', 'UTF-8');
+        $wide = self::conv($utf8, 'UTF-16LE', 'UTF-8');
         $len = intdiv(strlen($wide), 2);
         $arr = $this->user32->new('wchar_t[' . ($len + 1) . ']', false);
         for ($i = 0; $i < $len; $i++) {
@@ -1991,7 +2165,7 @@ C;
             $bytes .= chr($ch & 0xFF) . chr(($ch >> 8) & 0xFF);
             $i++;
         }
-        return mb_convert_encoding($bytes, 'UTF-8', 'UTF-16LE');
+        return self::conv($bytes, 'UTF-8', 'UTF-16LE');
     }
 
     /**
@@ -2006,7 +2180,7 @@ C;
      */
     private function wideBufIn(\FFI $ffi, string $utf8, int $minChars = 0): \FFI\CData
     {
-        $wide = mb_convert_encoding($utf8, 'UTF-16LE', 'UTF-8');
+        $wide = self::conv($utf8, 'UTF-16LE', 'UTF-8');
         $len = max(intdiv(strlen($wide), 2), $minChars);
         $arr = $ffi->new('wchar_t[' . ($len + 1) . ']', false);
         for ($i = 0; $i < $len; $i++) {
@@ -2058,7 +2232,7 @@ C;
         $encoded = [];
         $totalChars = 1; // 终止 \0
         foreach ($parts as $p) {
-            $wide = mb_convert_encoding($p, 'UTF-16LE', 'UTF-8');
+            $wide = self::conv($p, 'UTF-16LE', 'UTF-8');
             $encoded[] = $wide;
             $totalChars += intdiv(strlen($wide), 2) + 1; // 内容 + 段间 \0
         }
@@ -2154,8 +2328,12 @@ C;
         $wc->hInstance = null;
         $wc->hIcon = null;
         $wc->hCursor = $this->user32->LoadCursorW(null, self::IDC_ARROW);
+        // 窗口背景画刷：CLASSIC 主题用 COLOR_WINDOW+1（白色）保持经典外观；
+        // 非 CLASSIC 主题用 NULL 画刷（不绘制背景），让 DWM 的 Mica 云母背景
+        // 透过客户区显示（Win11 22000+）。Win10 无 Mica 时背景不擦除，由
+        // 控件自绘覆盖，客户区空隙可能显示为前一帧内容，属可接受降级。
         $bgC = $this->user32->new('INT_TO_PTR');
-        $bgC->i = self::COLOR_WINDOW + 1;
+        $bgC->i = $this->currentTheme === Theme::CLASSIC ? (self::COLOR_WINDOW + 1) : 0;
         $wc->hbrBackground = $bgC->p;
         $wc->lpszMenuName = null;
         $wc->lpszClassName = $classNamePtr;
@@ -2179,14 +2357,15 @@ C;
     }
 
     /**
-     * 创建现代字体（Segoe UI 9pt，gdi32 作用域 HFONT）。
+     * 创建现代字体（Segoe UI Variable 9pt，gdi32 作用域 HFONT）。
      *
      * 字体高度用负值表示按字符高度计算：-12 ≈ 9pt@96dpi。
      * CData 存 $this->hFont 防 GC，int 值通过 gdiPtrToInt 在应用时转换。
+     * Win11 优先用 "Segoe UI Variable"；旧系统无此字体会自动 fallback。
      */
     private function createModernFont(): void
     {
-        $faceName = $this->utf8ToWide('Segoe UI');
+        $faceName = $this->utf8ToWide('Segoe UI Variable');
         // 9pt @ 96dpi ≈ 12 像素，负值表示"字符高度"而非"单元格高度"
         $height = -12;
         $font = $this->gdi32->CreateFontW(
@@ -2772,21 +2951,38 @@ C;
 
         // UpDown（SpinBox）数值即将变化通知
         // NMUPDOWN = { NMHDR hdr; int iPos; int iDelta; }
-        // UDN_DELTAPOS 是"即将改变"通知，触发 SpinBox 的 onChanged 回调
+        // UDN_DELTAPOS 是"即将改变"通知：此时 UpDown 位置变更尚未应用，
+        // 同步调用 onChanged 会在回调内通过 UDM_GETPOS 重入 UpDown 控件，
+        // 干扰其变更流程。改为用 queueMain 异步触发回调：等当前消息处理
+        // 完成、DefWindowProcW 已应用变更后再读取新值，避免重入。
+        // return false 让 DefWindowProcW 正常处理（UDN_DELTAPOS 返回 FALSE
+        // 表示允许变更）。
+        //
+        // 另外：UDS_SETBUDDYINT 在 ComCtl32 v6 + SetWindowTheme("Explorer")
+        // 环境下不生效，UpDown 不会自动更新 buddy Edit 的文本。因此在
+        // 异步回调中手动同步 Edit 文本（在 onChanged 之前，确保回调内
+        // 读取到的是最新显示值）。
         if ($code === self::UDN_DELTAPOS) {
             $control = $this->controls[$fromHwnd] ?? null;
-            if ($control instanceof \Kingbes\Ui\Control\SpinBox
-                && $control->onChanged !== null
-            ) {
-                try {
-                    ($control->onChanged)();
-                } catch (\Throwable $e) {
-                    trigger_error(
-                        'onChanged callback error: ' . $e->getMessage(),
-                        \E_USER_WARNING
-                    );
-                }
-                return true;
+            if ($control instanceof \Kingbes\Ui\Control\SpinBox) {
+                $spin = $control;
+                $this->queueMain(function () use ($spin): void {
+                    // 手动同步 Edit 文本（UDS_SETBUDDYINT 不生效的 workaround）
+                    // 直接通过 $this 调用，避免依赖 App 静态方法（命名空间解析问题）
+                    $value = $spin->getValue();
+                    $this->controlSetText($spin->getHwnd(), (string)$value);
+                    if ($spin->onChanged !== null) {
+                        try {
+                            ($spin->onChanged)();
+                        } catch (\Throwable $e) {
+                            trigger_error(
+                                'onChanged callback error: ' . $e->getMessage(),
+                                \E_USER_WARNING
+                            );
+                        }
+                    }
+                });
+                return false;
             }
         }
         return false;
@@ -2846,7 +3042,7 @@ C;
                 $text = $model->getCellValue($row, $col);
 
                 // 写入 pszText 缓冲（pszText 由控件分配，cchTextMax 为容量）
-                $textWide = mb_convert_encoding($text, 'UTF-16LE', 'UTF-8');
+                $textWide = self::conv($text, 'UTF-16LE', 'UTF-8');
                 $textChars = intdiv(strlen($textWide), 2);
                 $maxChars = (int) $item->cchTextMax;
                 $writeChars = min($textChars, max(0, $maxChars - 1));
@@ -3015,6 +3211,52 @@ C;
     }
 
     /**
+     * 判断当前是否应使用 uxtheme 视觉样式渲染。
+     *
+     * 满足以下全部条件时返回 true：
+     *   - uxtheme.dll 已成功 cdef 加载
+     *   - 当前主题非 Theme::CLASSIC
+     *   - IsThemeActive() 返回真（系统启用了视觉样式）
+     *
+     * 任意条件不满足时返回 false，调用方需回退到 DrawFrameControl/FillRect。
+     */
+    private function themeIsActive(): bool
+    {
+        if ($this->uxtheme === null) {
+            return false;
+        }
+        if ($this->currentTheme === Theme::CLASSIC) {
+            return false;
+        }
+        try {
+            return (bool) $this->uxtheme->IsThemeActive();
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * 把 user32 作用域 HDC CData 转为 uxtheme 作用域 HDC（通过 int 中转）。
+     */
+    private function hdcToUxtheme(\FFI\CData $hdc): \FFI\CData
+    {
+        return $this->intToPtrIn($this->uxtheme, $this->ptrToInt($hdc));
+    }
+
+    /**
+     * 在 uxtheme 作用域复制一份 user32 作用域 RECT（DrawThemeBackground 用）。
+     */
+    private function rectToUxtheme(\FFI\CData $rc): \FFI\CData
+    {
+        $ux = $this->uxtheme->new('RECT');
+        $ux->left   = (int) $rc->left;
+        $ux->top    = (int) $rc->top;
+        $ux->right  = (int) $rc->right;
+        $ux->bottom = (int) $rc->bottom;
+        return $ux;
+    }
+
+    /**
      * 自绘 Table 单元格（checkbox/progress/color/button）。
      *
      * @param Table     $control Table 实例。
@@ -3053,7 +3295,11 @@ C;
     }
 
     /**
-     * 绘制 checkbox 单元格（DrawFrameControl DFC_BUTTON | DFCS_BUTTONCHECK）。
+     * 绘制 checkbox 单元格。
+     *
+     * 主题激活时用 DrawThemeBackground(BP_CHECKBOX=3, CBS_CHECKEDNORMAL=5 /
+     * CBS_UNCHECKEDNORMAL=1) 渲染 Win11 风格复选框；否则回退到
+     * DrawFrameControl(DFC_BUTTON | DFCS_BUTTONCHECK)。
      */
     private function drawCellCheckbox(\FFI\CData $hdc, \FFI\CData $rc, bool $checked): void
     {
@@ -3063,6 +3309,37 @@ C;
         $left = (int) $rc->left + 4;
         $top = (int) $rc->top + (((int) $rc->bottom - (int) $rc->top) - $cy) / 2;
 
+        // 主题化路径：OpenThemeData("Button") + DrawThemeBackground
+        if ($this->themeIsActive()) {
+            try {
+                $classList = $this->wideBufIn($this->uxtheme, 'Button');
+                $hTheme = $this->uxtheme->OpenThemeData(null, \FFI::addr($classList[0]));
+                if ($hTheme !== null && !\FFI::isNull($hTheme)) {
+                    $cbRect = $this->uxtheme->new('RECT');
+                    $cbRect->left = $left;
+                    $cbRect->top = $top;
+                    $cbRect->right = $left + $cx;
+                    $cbRect->bottom = $top + $cy;
+                    // BP_CHECKBOX=3, CBS_UNCHECKEDNORMAL=1, CBS_CHECKEDNORMAL=5
+                    $stateId = $checked ? 5 : 1;
+                    $hdcUx = $this->hdcToUxtheme($hdc);
+                    $this->uxtheme->DrawThemeBackground(
+                        $hTheme,
+                        $hdcUx,
+                        3,
+                        $stateId,
+                        \FFI::addr($cbRect),
+                        null
+                    );
+                    $this->uxtheme->CloseThemeData($hTheme);
+                    return;
+                }
+            } catch (\Throwable $e) {
+                // 主题化失败，回退到 DrawFrameControl
+            }
+        }
+
+        // 回退：DrawFrameControl DFC_BUTTON | DFCS_BUTTONCHECK
         $cbRect = $this->user32->new('RECT');
         $cbRect->left = $left;
         $cbRect->top = $top;
@@ -3074,7 +3351,11 @@ C;
     }
 
     /**
-     * 绘制进度条单元格（DrawEdge 边框 + FillRect 填充进度）。
+     * 绘制进度条单元格。
+     *
+     * 主题激活时用 OpenThemeData("Progress") + DrawThemeBackground(PP_BAR=1)
+     * 绘制轨道，再 DrawThemeBackground(PP_FILL=2) 按进度裁剪填充；否则回退到
+     * DrawEdge(EDGE_SUNKEN) + FillRect(COLOR_HIGHLIGHT)。
      */
     private function drawCellProgress(\FFI\CData $hdc, \FFI\CData $rc, int $value): void
     {
@@ -3089,7 +3370,43 @@ C;
             return;
         }
 
-        // 外框
+        // 主题化路径：OpenThemeData("Progress") + DrawThemeBackground
+        if ($this->themeIsActive()) {
+            try {
+                $classList = $this->wideBufIn($this->uxtheme, 'Progress');
+                $hTheme = $this->uxtheme->OpenThemeData(null, \FFI::addr($classList[0]));
+                if ($hTheme !== null && !\FFI::isNull($hTheme)) {
+                    $hdcUx = $this->hdcToUxtheme($hdc);
+                    // PP_BAR=1：整条轨道
+                    $barRect = $this->uxtheme->new('RECT');
+                    $barRect->left = $left;
+                    $barRect->top = $top;
+                    $barRect->right = $right;
+                    $barRect->bottom = $bottom;
+                    $this->uxtheme->DrawThemeBackground(
+                        $hTheme, $hdcUx, 1, 0, \FFI::addr($barRect), null
+                    );
+                    // PP_FILL=2：按进度裁剪绘制填充块
+                    $fillW = (int) ($w * $value / 100);
+                    if ($fillW > 0) {
+                        $fillRect = $this->uxtheme->new('RECT');
+                        $fillRect->left = $left;
+                        $fillRect->top = $top;
+                        $fillRect->right = $left + $fillW;
+                        $fillRect->bottom = $bottom;
+                        $this->uxtheme->DrawThemeBackground(
+                            $hTheme, $hdcUx, 2, 0, \FFI::addr($fillRect), null
+                        );
+                    }
+                    $this->uxtheme->CloseThemeData($hTheme);
+                    return;
+                }
+            } catch (\Throwable $e) {
+                // 主题化失败，回退到 DrawEdge + FillRect
+            }
+        }
+
+        // 回退：DrawEdge 外框 + FillRect 进度填充
         $frameRect = $this->user32->new('RECT');
         $frameRect->left = $left;
         $frameRect->top = $top;
@@ -3097,7 +3414,6 @@ C;
         $frameRect->bottom = $bottom;
         $this->user32->DrawEdge($hdc, \FFI::addr($frameRect), self::EDGE_SUNKEN, self::BF_RECT);
 
-        // 进度填充
         $fillW = (int) ($w * $value / 100);
         if ($fillW > 0) {
             $fillRect = $this->user32->new('RECT');
@@ -3150,28 +3466,34 @@ C;
     }
 
     /**
-     * 绘制按钮单元格（DrawFrameControl DFC_BUTTON | DFCS_BUTTONPUSH + DrawTextW 居中文本）。
+     * 绘制按钮单元格。
+     *
+     * 改进：
+     *   - 用 DrawTextW(DT_CALCRECT) 预测量文字宽高
+     *   - 按钮尺寸 = min(文字+padding, 格子-边距)，在格子内居中
+     *   - 主题激活时用 DrawThemeBackground(BP_PUSHBUTTON=1, PBS_NORMAL=1)
+     *     + DrawThemeText 渲染；否则回退到 DrawFrameControl + DrawTextW
+     *   - 文本渲染加 DT_END_ELLIPSIS 防止溢出
      */
     private function drawCellButton(\FFI\CData $hdc, \FFI\CData $rc, string $text): void
     {
-        $left = (int) $rc->left + 4;
-        $right = (int) $rc->right - 4;
-        $top = (int) $rc->top + 3;
-        $bottom = (int) $rc->bottom - 3;
-        if ($right - $left <= 0 || $bottom - $top <= 0) {
+        $cellLeft = (int) $rc->left;
+        $cellRight = (int) $rc->right;
+        $cellTop = (int) $rc->top;
+        $cellBottom = (int) $rc->bottom;
+        $cellW = $cellRight - $cellLeft;
+        $cellH = $cellBottom - $cellTop;
+        if ($cellW <= 0 || $cellH <= 0) {
             return;
         }
 
-        $btnRect = $this->user32->new('RECT');
-        $btnRect->left = $left;
-        $btnRect->top = $top;
-        $btnRect->right = $right;
-        $btnRect->bottom = $bottom;
-        $this->user32->DrawFrameControl($hdc, \FFI::addr($btnRect), self::DFC_BUTTON, self::DFCS_BUTTONPUSH | self::DFCS_FLAT);
-
+        // 测量文字宽高（DrawTextW DT_CALCRECT 不渲染，仅计算）
+        $textW = 0;
+        $textH = 0;
+        $chars = 0;
+        $buf = null;
         if ($text !== '') {
-            // UTF-8 → UTF-16LE 写入 wchar_t 缓冲
-            $wide = mb_convert_encoding($text, 'UTF-16LE', 'UTF-8');
+            $wide = self::conv($text, 'UTF-16LE', 'UTF-8');
             $chars = intdiv(strlen($wide), 2);
             $buf = $this->user32->new('wchar_t[' . ($chars + 1) . ']');
             for ($i = 0; $i < $chars; $i++) {
@@ -3179,6 +3501,82 @@ C;
             }
             $buf[$chars] = 0;
 
+            $textRect = $this->user32->new('RECT');
+            $textRect->left = 0;
+            $textRect->top = 0;
+            $textRect->right = 1000;
+            $textRect->bottom = 1000;
+            $this->user32->DrawTextW(
+                $hdc,
+                \FFI::addr($buf[0]),
+                $chars,
+                \FFI::addr($textRect),
+                self::DT_CALCRECT | self::DT_SINGLELINE
+            );
+            $textW = (int) $textRect->right - (int) $textRect->left;
+            $textH = (int) $textRect->bottom - (int) $textRect->top;
+        }
+
+        // 按钮尺寸：文字 + padding，不超出格子（留 4px 边距）
+        $btnW = min($textW + 16, $cellW - 8);
+        $btnH = min($textH + 6, $cellH - 6);
+        if ($btnW < 0) { $btnW = 0; }
+        if ($btnH < 0) { $btnH = 0; }
+        // 居中
+        $btnLeft = $cellLeft + (int) (($cellW - $btnW) / 2);
+        $btnTop  = $cellTop  + (int) (($cellH - $btnH) / 2);
+
+        $btnRect = $this->user32->new('RECT');
+        $btnRect->left = $btnLeft;
+        $btnRect->top = $btnTop;
+        $btnRect->right = $btnLeft + $btnW;
+        $btnRect->bottom = $btnTop + $btnH;
+
+        // 主题化路径：OpenThemeData("Button") + DrawThemeBackground + DrawThemeText
+        $useTheme = $this->themeIsActive();
+        if ($useTheme) {
+            try {
+                $classList = $this->wideBufIn($this->uxtheme, 'Button');
+                $hTheme = $this->uxtheme->OpenThemeData(null, \FFI::addr($classList[0]));
+                if ($hTheme !== null && !\FFI::isNull($hTheme)) {
+                    $hdcUx = $this->hdcToUxtheme($hdc);
+                    $uxBtnRect = $this->rectToUxtheme($btnRect);
+                    // BP_PUSHBUTTON=1, PBS_NORMAL=1
+                    $this->uxtheme->DrawThemeBackground(
+                        $hTheme, $hdcUx, 1, 1, \FFI::addr($uxBtnRect), null
+                    );
+                    if ($text !== '' && $buf !== null) {
+                        // 在 uxtheme 作用域复制 wchar_t[] 缓冲（跨作用域不互通）
+                        $uxBuf = $this->wideBufIn($this->uxtheme, $text);
+                        // DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS
+                        $flags = self::DT_CENTER | self::DT_VCENTER
+                            | self::DT_SINGLELINE | self::DT_END_ELLIPSIS;
+                        $this->uxtheme->DrawThemeText(
+                            $hTheme,
+                            $hdcUx,
+                            1, 1,
+                            \FFI::addr($uxBuf[0]),
+                            -1,
+                            $flags,
+                            0,
+                            \FFI::addr($uxBtnRect)
+                        );
+                    }
+                    $this->uxtheme->CloseThemeData($hTheme);
+                    return;
+                }
+            } catch (\Throwable $e) {
+                // 主题化失败，回退到 DrawFrameControl
+            }
+        }
+
+        // 回退：DrawFrameControl + DrawTextW
+        $this->user32->DrawFrameControl(
+            $hdc, \FFI::addr($btnRect), self::DFC_BUTTON,
+            self::DFCS_BUTTONPUSH | self::DFCS_FLAT
+        );
+
+        if ($text !== '' && $buf !== null) {
             // SetBkMode 在 gdi32 作用域，HDC 来自 user32 作用域，通过 int 中转
             $hdcInt = $this->ptrToInt($hdc);
             $hdcGdi = $this->intToPtrIn($this->gdi32, $hdcInt);
@@ -3188,7 +3586,8 @@ C;
                 \FFI::addr($buf[0]),
                 $chars,
                 \FFI::addr($btnRect),
-                self::DT_CENTER | self::DT_VCENTER | self::DT_SINGLELINE
+                self::DT_CENTER | self::DT_VCENTER
+                | self::DT_SINGLELINE | self::DT_END_ELLIPSIS
             );
         }
     }
@@ -3302,6 +3701,11 @@ C;
                 return 0;
             }
             // 其他通知：值变化，触发 onChanged
+            // SpinBox 的 onChanged 由 UDN_DELTAPOS 异步处理（含手动同步 Edit 文本），
+            // 此处跳过避免双重触发。
+            if ($control instanceof \Kingbes\Ui\Control\SpinBox) {
+                return 0;
+            }
             if (property_exists($control, 'onChanged') && $control->onChanged !== null) {
                 try {
                     ($control->onChanged)();
@@ -3511,6 +3915,12 @@ C;
         // DARK 主题下自动让标题栏变深色（DwmSetWindowAttribute）
         if ($this->currentTheme === Theme::DARK) {
             $this->setWindowDarkMode($hwndInt, true);
+        }
+
+        // Win11 圆角窗口 + Mica 云母背景（CLASSIC 主题跳过保持经典外观）
+        if ($this->currentTheme !== Theme::CLASSIC) {
+            $this->setWindowCornerPreference($hwndInt, true);
+            $this->setWindowMica($hwndInt, true);
         }
 
         return $hwndInt;
@@ -4133,7 +4543,7 @@ C;
      */
     private function writeWideStringField(\FFI\CData $field, string $text, int $maxLen): void
     {
-        $wide = mb_convert_encoding($text, 'UTF-16LE', 'UTF-8');
+        $wide = self::conv($text, 'UTF-16LE', 'UTF-8');
         $chars = intdiv(strlen($wide), 2);
         $copyLen = min($chars, $maxLen - 1);
         for ($i = 0; $i < $copyLen; $i++) {
@@ -4268,7 +4678,7 @@ C;
 
     public function clipboardSetText(string $text): void
     {
-        $wide = mb_convert_encoding($text, 'UTF-16LE', 'UTF-8');
+        $wide = self::conv($text, 'UTF-16LE', 'UTF-8');
         $byteCount = strlen($wide) + 2; // 含 \0\0 终止
 
         $hMem = $this->kernel32->GlobalAlloc(self::GMEM_MOVEABLE, $byteCount);
@@ -4325,7 +4735,7 @@ C;
             }
         }
         $this->kernel32->GlobalUnlock($data);
-        return mb_convert_encoding($bytes, 'UTF-8', 'UTF-16LE');
+        return self::conv($bytes, 'UTF-8', 'UTF-16LE');
     }
 
     // ============================================================
@@ -4384,6 +4794,34 @@ C;
         if ($this->hFont !== null) {
             $fontInt = $this->gdiPtrToInt($this->hFont);
             $this->user32->SendMessageW($hwnd, self::WM_SETFONT, $fontInt, 1);
+        }
+
+        // Task 3：非 CLASSIC 主题时对标准控件应用 "Explorer" 子样式，
+        // 呈现资源管理器风格的浅色高亮与 Windows 11 圆角行选择，
+        // 并使 Entry/TextArea/PasswordEntry/SpinBox/ListBox 等去掉 3D 边框后
+        // 获得 Explorer 风格的扁平边框。
+        // SetWindowTheme 在 uxtheme 作用域；hwnd 需从 user32→int→uxtheme 跨域转换，
+        // "Explorer" 字符串也需在 uxtheme 作用域内构建 wchar_t[]。
+        if ($this->uxtheme !== null && $this->currentTheme !== Theme::CLASSIC) {
+            $explorerClasses = [
+                'SysListView32', 'SysTreeView32',
+                'Button', 'Edit', 'Static', 'ComboBox', 'ListBox',
+                'msctls_updown32', 'msctls_progress32', 'msctls_trackbar32',
+            ];
+            if (in_array($className, $explorerClasses, true)) {
+                try {
+                    $hwndIntTmp = $this->hwndInt($hwnd);
+                    $hwndUx = $this->intToPtrIn($this->uxtheme, $hwndIntTmp);
+                    $subApp = $this->wideBufIn($this->uxtheme, 'Explorer');
+                    $this->uxtheme->SetWindowTheme(
+                        $hwndUx,
+                        \FFI::addr($subApp[0]),
+                        null
+                    );
+                } catch (\Throwable $e) {
+                    // SetWindowTheme 不可用（旧系统），静默降级到经典外观
+                }
+            }
         }
 
         $hwndInt = $this->hwndInt($hwnd);
@@ -4751,6 +5189,25 @@ C;
             self::LVM_INSERTCOLUMNW,
             $index,
             $this->ptrToInt(\FFI::addr($col))
+        );
+    }
+
+    /**
+     * 设置指定列的宽度（LVM_SETCOLUMNWIDTH = 0x101E）。
+     *
+     * @param int $hwnd  ListView 句柄。
+     * @param int $col   列索引（0-based）。
+     * @param int $width 列宽（像素）。
+     */
+    public function tableSetColumnWidth(int $hwnd, int $col, int $width): void
+    {
+        $h = $this->intToHwnd($hwnd);
+        // LVM_SETCOLUMNWIDTH: wParam=列索引, lParam=宽度（像素）
+        $this->user32->SendMessageW(
+            $h,
+            self::LVM_SETCOLUMNWIDTH,
+            $col,
+            $width
         );
     }
 
@@ -5475,7 +5932,7 @@ C;
         $lf->lfQuality = 0;
         $lf->lfPitchAndFamily = 0;
         // lfFaceName = "Segoe UI"（LF_FACESIZE=32）
-        $faceWide = mb_convert_encoding('Segoe UI', 'UTF-16LE', 'UTF-8');
+        $faceWide = self::conv('Segoe UI', 'UTF-16LE', 'UTF-8');
         $faceChars = intdiv(strlen($faceWide), 2);
         for ($i = 0; $i < 32; $i++) {
             $lf->lfFaceName[$i] = $i < $faceChars
@@ -5523,7 +5980,7 @@ C;
             }
             $bytes .= chr($ch & 0xFF) . chr(($ch >> 8) & 0xFF);
         }
-        $fontName = mb_convert_encoding($bytes, 'UTF-8', 'UTF-16LE');
+        $fontName = self::conv($bytes, 'UTF-8', 'UTF-16LE');
 
         // iPointSize 单位为 1/10 磅
         $fontSize = (int) round((int) $cf->iPointSize / 10);

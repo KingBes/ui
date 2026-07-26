@@ -373,9 +373,12 @@ class Table extends Control
      * 必须在 setModel 之前调用。调用后会清空已有行。
      *
      * @param array<int,string> $columnTexts 列标题列表。
-     * @param int               $columnWidth 每列默认宽度（像素），默认 100。
+     * @param int|array         $columnWidth 每列宽度（像素）：
+     *     - int：所有列统一宽度（向后兼容，默认 100）。
+     *     - array<int,int>：按列单独指定宽度，键为列索引（0-based）。
+     *       长度可与 $columnTexts 不一致，缺失的列回退为默认值 100。
      */
-    public function setColumns(array $columnTexts, int $columnWidth = 100): void
+    public function setColumns(array $columnTexts, int|array $columnWidth = 100): void
     {
         // 清空已有列
         App::platform()->tableClearColumns($this->hwnd);
@@ -383,9 +386,43 @@ class Table extends Control
 
         $i = 0;
         foreach ($columnTexts as $text) {
-            App::platform()->tableInsertColumn($this->hwnd, $i, $text, $columnWidth);
-            $this->columns[] = ['text' => $text, 'width' => $columnWidth];
+            // 数组形式按列取宽度，缺失回退 100；int 形式统一宽度
+            $w = is_array($columnWidth)
+                ? (isset($columnWidth[$i]) ? (int) $columnWidth[$i] : 100)
+                : $columnWidth;
+            App::platform()->tableInsertColumn($this->hwnd, $i, $text, $w);
+            $this->columns[] = ['text' => $text, 'width' => $w];
             $i++;
+        }
+    }
+
+    /**
+     * 单独设置某列宽度（在 setColumns 之后调用）。
+     *
+     * 注意：当前 WindowsPlatform 尚未提供 tableSetColumnWidth 平台方法，
+     * 此方法暂只更新内部列定义状态，不会即时改变已显示列宽。
+     * 待平台层补充 LVM_SETCOLUMNWIDTH 支持后即可生效。
+     *
+     * @param int $col   列索引（从 0 开始）。
+     * @param int $width 列宽度（像素）。
+     */
+    public function setColumnWidth(int $col, int $width): void
+    {
+        if (!isset($this->columns[$col])) {
+            trigger_error(
+                "setColumnWidth: column index {$col} out of range",
+                \E_USER_WARNING
+            );
+            return;
+        }
+
+        // 更新内部列定义
+        $this->columns[$col]['width'] = $width;
+
+        // 若平台提供了设置列宽的方法则调用，否则仅更新内部状态
+        $platform = App::platform();
+        if (method_exists($platform, 'tableSetColumnWidth')) {
+            $platform->tableSetColumnWidth($this->hwnd, $col, $width);
         }
     }
 

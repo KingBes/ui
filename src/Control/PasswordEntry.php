@@ -47,7 +47,7 @@ class PasswordEntry extends Control
             'Edit',
             $this->text,
             self::ES_AUTOHSCROLL | self::ES_PASSWORD | self::WS_TABSTOP,
-            self::WS_EX_CLIENTEDGE,
+            0,
             $this->parentHwnd(),
             0
         );

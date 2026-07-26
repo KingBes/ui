@@ -424,6 +424,15 @@ interface PlatformInterface
     public function tableInsertColumn(int $hwnd, int $index, string $text, int $width): void;
 
     /**
+     * 设置指定列的宽度（LVM_SETCOLUMNWIDTH）。
+     *
+     * @param int $hwnd  ListView 句柄。
+     * @param int $col   列索引（0-based）。
+     * @param int $width 列宽（像素）。
+     */
+    public function tableSetColumnWidth(int $hwnd, int $col, int $width): void;
+
+    /**
      * 清空所有列。
      */
     public function tableClearColumns(int $hwnd): void;

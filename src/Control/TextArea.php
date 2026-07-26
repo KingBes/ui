@@ -47,7 +47,7 @@ class TextArea extends Control
             $this->text,
             self::ES_MULTILINE | self::ES_AUTOVSCROLL
                 | self::ES_WANTRETURN | self::WS_VSCROLL | self::WS_TABSTOP,
-            self::WS_EX_CLIENTEDGE,
+            0,
             $this->parentHwnd(),
             0
         );

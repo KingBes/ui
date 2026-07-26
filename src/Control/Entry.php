@@ -45,7 +45,7 @@ class Entry extends Control
             'Edit',
             $this->text,
             self::ES_AUTOHSCROLL | self::WS_TABSTOP,
-            self::WS_EX_CLIENTEDGE,
+            0,
             $this->parentHwnd(),
             0
         );

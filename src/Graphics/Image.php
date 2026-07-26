@@ -53,7 +53,7 @@ final class Image
         $gp = $platform->getGdiplus();
 
         // UTF-8 → UTF-16LE → gdiplus 作用域 wchar_t[]
-        $wide = mb_convert_encoding($path, 'UTF-16LE', 'UTF-8');
+        $wide = WindowsPlatform::conv($path, 'UTF-16LE', 'UTF-8');
         $len = intdiv(strlen($wide), 2);
         $arr = $gp->new('wchar_t[' . ($len + 1) . ']');
         for ($i = 0; $i < $len; $i++) {

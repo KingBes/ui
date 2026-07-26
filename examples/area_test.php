@@ -79,18 +79,22 @@ $area->onDraw = function (DrawContext $ctx) use (
     &$mouseX, &$mouseY, &$clickX, &$clickY,
     $attrStr
 ): void {
+    // 客户区实际尺寸（窗口放大时也能铺满，避免黑边）
+    $w = $ctx->getWidth();
+    $h = $ctx->getHeight();
+
     // 1. 背景填充（白色）
     $ctx->setBrush(Color::white());
     $ctx->setPen(Color::white(), 1);
-    $ctx->drawRect(0, 0, 700, 460);
+    $ctx->drawRect(0, 0, $w, $h);
 
     // 2. 网格线（银色）
     $ctx->setPen(Color::silver(), 1);
-    for ($x = 0; $x <= 700; $x += 40) {
-        $ctx->drawLine($x, 0, $x, 460);
+    for ($x = 0; $x <= $w; $x += 40) {
+        $ctx->drawLine($x, 0, $x, $h);
     }
-    for ($y = 0; $y <= 460; $y += 40) {
-        $ctx->drawLine(0, $y, 700, $y);
+    for ($y = 0; $y <= $h; $y += 40) {
+        $ctx->drawLine(0, $y, $w, $y);
     }
 
     // 3. 填充矩形（红边 + 黄填充）

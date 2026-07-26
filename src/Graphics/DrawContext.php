@@ -49,8 +49,43 @@ final class DrawContext
 
     /**
      * gdi32 作用域的 HDC 指针（GDI 绘图使用）。
+     *
+     * 双缓冲启用后指向内存 DC（memDc），所有 GDI 绘制先写入内存
+     * 位图，free() 时一次性 BitBlt 到屏幕 DC。
      */
     private \FFI\CData $hdcGdi;
+
+    /**
+     * 屏幕 DC（gdi32 作用域，BeginPaint 返回的原始 DC）。
+     *
+     * 双缓冲 BitBlt 的目标。内存 DC 创建时也以此为兼容参照。
+     */
+    private \FFI\CData $screenHdcGdi;
+
+    /**
+     * 内存兼容 DC（gdi32 作用域），用于离屏绘制。
+     */
+    private ?\FFI\CData $memDc = null;
+
+    /**
+     * 内存位图（gdi32 作用域），选入 memDc 作为绘制表面。
+     */
+    private ?\FFI\CData $memBitmap = null;
+
+    /**
+     * SelectObject(memDc, memBitmap) 返回的旧 1x1 单色位图，需在 free 时恢复。
+     */
+    private ?\FFI\CData $oldBitmap = null;
+
+    /**
+     * 双缓冲位图尺寸（客户区宽高，BitBlt 拷贝范围）。
+     */
+    private int $bufWidth = 0;
+
+    /**
+     * 双缓冲位图尺寸（客户区高，BitBlt 拷贝范围）。
+     */
+    private int $bufHeight = 0;
 
     /**
      * GDI+ Graphics（gdiplus 作用域）。
@@ -152,7 +187,38 @@ final class DrawContext
     }
 
     /**
+     * 获取 Area 客户区宽度（像素）。
+     *
+     * onDraw 回调可用此值代替硬编码尺寸，确保背景/网格等能铺满
+     * 整个绘图区域，避免窗口放大后出现黑边（双缓冲内存位图未覆盖区域）。
+     */
+    public function getWidth(): int
+    {
+        return $this->bufWidth;
+    }
+
+    /**
+     * 获取 Area 客户区高度（像素）。
+     */
+    public function getHeight(): int
+    {
+        return $this->bufHeight;
+    }
+
+    /**
      * 内部构造，由 WindowsPlatform::drawContextCreate 创建。
+     *
+     * 双缓冲流程：
+     *   1. 保存 BeginPaint 返回的屏幕 DC（screenHdcGdi）。
+     *   2. GetClientRect 获取客户区尺寸。
+     *   3. CreateCompatibleDC(screenHdc) → 内存 DC。
+     *   4. CreateCompatibleBitmap(screenHdc, w, h) → 等大位图。
+     *   5. SelectObject(memDc, memBitmap) 关联位图与内存 DC。
+     *   6. 后续 GDI/GDI+ 绘制全部基于 memDc（hdcGdi 指向 memDc）。
+     *   7. free() 时 BitBlt 一次性把 memDc 拷贝到 screenHdcGdi。
+     *
+     * 客户区为 0x0 时（窗口尚未布局）跳过双缓冲，直接用屏幕 DC，
+     * 避免 CreateCompatibleBitmap(0,0) 失败。
      *
      * @param WindowsPlatform $platform 平台实例。
      * @param \FFI\CData      $ps       PAINTSTRUCT（user32 作用域，已由 BeginPaint 填充）。
@@ -168,12 +234,40 @@ final class DrawContext
         $this->textColor = Color::black();
         $this->penColor = Color::black();
 
-        // gdi32 作用域 HDC
-        $this->hdcGdi = $platform->intToPtrIn($platform->getGdi32(), $hdcInt);
+        $gdi = $platform->getGdi32();
+        // 屏幕 DC（gdi32 作用域），双缓冲的兼容参照与 BitBlt 目标
+        $this->screenHdcGdi = $platform->intToPtrIn($gdi, $hdcInt);
 
-        // 创建 GDI+ Graphics：gdiplus 作用域 HDC → GdipCreateFromHDC
+        // 默认 hdcGdi 指向屏幕 DC（客户区为 0 时回退路径）
+        $this->hdcGdi = $this->screenHdcGdi;
+
+        // 获取客户区尺寸，用于创建等大内存位图
+        $rect = $platform->getUser32()->new('RECT');
+        $platform->getUser32()->GetClientRect($hwnd, \FFI::addr($rect));
+        $w = (int) ($rect->right - $rect->left);
+        $h = (int) ($rect->bottom - $rect->top);
+
+        // 始终记录客户区尺寸，供 getWidth/getHeight 暴露给 onDraw 回调
+        $this->bufWidth = $w;
+        $this->bufHeight = $h;
+
+        if ($w > 0 && $h > 0) {
+            // 创建内存 DC 与等大位图
+            $memDc = $gdi->CreateCompatibleDC($this->screenHdcGdi);
+            $memBmp = $gdi->CreateCompatibleBitmap($this->screenHdcGdi, $w, $h);
+            $oldBmp = $gdi->SelectObject($memDc, $memBmp);
+
+            $this->memDc = $memDc;
+            $this->memBitmap = $memBmp;
+            $this->oldBitmap = $oldBmp;
+            // 后续 GDI 绘制全部走内存 DC
+            $this->hdcGdi = $memDc;
+        }
+
+        // 创建 GDI+ Graphics：基于 hdcGdi（内存 DC 或屏幕 DC）
         $gp = $platform->getGdiplus();
-        $hdcGp = $platform->intToPtrIn($gp, $hdcInt);
+        $hdcGpInt = $platform->ptrToIntIn($gdi, $this->hdcGdi);
+        $hdcGp = $platform->intToPtrIn($gp, $hdcGpInt);
         $g = $gp->new('GpGraphics');
         $status = (int) $gp->GdipCreateFromHDC($hdcGp, \FFI::addr($g));
         if ($status !== 0) {
@@ -417,7 +511,7 @@ final class DrawContext
         $gp = $this->platform->getGdiplus();
 
         // UTF-8 → UTF-16LE → gdiplus 作用域 wchar_t[]
-        $wide = mb_convert_encoding($text, 'UTF-16LE', 'UTF-8');
+        $wide = WindowsPlatform::conv($text, 'UTF-16LE', 'UTF-8');
         $len = intdiv(strlen($wide), 2);
         if ($len === 0) {
             return;
@@ -477,7 +571,7 @@ final class DrawContext
         $gdi->SetBkMode($this->hdcGdi, 1); // TRANSPARENT=1
 
         // UTF-8 → UTF-16LE → gdi32 作用域 wchar_t[]
-        $wide = mb_convert_encoding($text, 'UTF-16LE', 'UTF-8');
+        $wide = WindowsPlatform::conv($text, 'UTF-16LE', 'UTF-8');
         $len = intdiv(strlen($wide), 2);
         if ($len === 0) {
             return;
@@ -497,7 +591,7 @@ final class DrawContext
     private function wideBufGdi(string $text): \FFI\CData
     {
         $gdi = $this->platform->getGdi32();
-        $wide = mb_convert_encoding($text, 'UTF-16LE', 'UTF-8');
+        $wide = WindowsPlatform::conv($text, 'UTF-16LE', 'UTF-8');
         $len = max(1, intdiv(strlen($wide), 2));
         $arr = $gdi->new('wchar_t[' . ($len + 1) . ']', false);
         for ($i = 0; $i < $len; $i++) {
@@ -936,6 +1030,31 @@ final class DrawContext
         }
         $gp->GdipDeleteGraphics($this->graphics);
 
+        // 双缓冲：把内存 DC 一次性 BitBlt 到屏幕 DC，再释放内存资源。
+        // 顺序：GDI+ Graphics 已删除 → BitBlt（memDc 已无 GDI+ 引用）→
+        //       恢复 memDc 旧位图 → DeleteObject(memBitmap) → DeleteDC(memDc)
+        if ($this->memDc !== null) {
+            // SRCCOPY = 0x00CC0020
+            $gdi->BitBlt(
+                $this->screenHdcGdi,
+                0, 0, $this->bufWidth, $this->bufHeight,
+                $this->memDc,
+                0, 0,
+                0x00CC0020
+            );
+            // 恢复 memDc 的默认 1x1 单色位图，再释放用户位图与 DC
+            if ($this->oldBitmap !== null) {
+                $gdi->SelectObject($this->memDc, $this->oldBitmap);
+            }
+            if ($this->memBitmap !== null) {
+                $gdi->DeleteObject($this->memBitmap);
+            }
+            $gdi->DeleteDC($this->memDc);
+            $this->memDc = null;
+            $this->memBitmap = null;
+            $this->oldBitmap = null;
+        }
+
         // EndPaint 配对 BeginPaint
         $this->platform->getUser32()->EndPaint($this->hwnd, \FFI::addr($this->ps));
     }
@@ -960,7 +1079,7 @@ final class DrawContext
     private function wideBufGp(string $text): \FFI\CData
     {
         $gp = $this->platform->getGdiplus();
-        $wide = mb_convert_encoding($text, 'UTF-16LE', 'UTF-8');
+        $wide = WindowsPlatform::conv($text, 'UTF-16LE', 'UTF-8');
         $len = max(1, intdiv(strlen($wide), 2));
         $arr = $gp->new('wchar_t[' . ($len + 1) . ']', false);
         for ($i = 0; $i < $len; $i++) {

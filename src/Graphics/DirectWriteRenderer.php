@@ -304,7 +304,7 @@ final class DirectWriteRenderer
         );
 
         // 创建 IDWriteTextLayout
-        $textWide = mb_convert_encoding($text, 'UTF-16LE', 'UTF-8');
+        $textWide = WindowsPlatform::conv($text, 'UTF-16LE', 'UTF-8');
         $textLen = intdiv(strlen($textWide), 2);
         $textBuf = $this->dwrite->new('wchar_t[' . ($textLen + 1) . ']');
         for ($i = 0; $i < $textLen; $i++) {
@@ -429,7 +429,7 @@ final class DirectWriteRenderer
      */
     private function wideBuf(string $text): \FFI\CData
     {
-        $wide = mb_convert_encoding($text, 'UTF-16LE', 'UTF-8');
+        $wide = WindowsPlatform::conv($text, 'UTF-16LE', 'UTF-8');
         $len = max(1, intdiv(strlen($wide), 2));
         $arr = $this->dwrite->new('wchar_t[' . ($len + 1) . ']', false);
         for ($i = 0; $i < $len; $i++) {

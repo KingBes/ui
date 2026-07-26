@@ -16,8 +16,13 @@ use Kingbes\Ui\Window;
  */
 class ListBox extends Control
 {
-    private const LBS_STANDARD = 0x00A00003;
-    private const WS_TABSTOP    = 0x00010000;
+    // LBS_STANDARD 含 WS_BORDER 会带 Win7 凹陷 3D 边框，
+    // Win11 改用 LBS_NOTIFY | LBS_SORT | WS_VSCROLL 扁平外观，
+    // 边框由 ComCtl32 v6 主题 + SetWindowTheme("Explorer") 提供。
+    private const LBS_NOTIFY  = 0x0001;
+    private const LBS_SORT    = 0x0002;
+    private const WS_VSCROLL  = 0x00200000;
+    private const WS_TABSTOP  = 0x00010000;
 
     /** 选择项变化回调（无参数）。 */
     public ?\Closure $onSelect = null;
@@ -35,7 +40,7 @@ class ListBox extends Control
         $this->hwnd = App::platform()->controlCreate(
             'ListBox',
             '',
-            self::LBS_STANDARD | self::WS_TABSTOP,
+            self::LBS_NOTIFY | self::LBS_SORT | self::WS_VSCROLL | self::WS_TABSTOP,
             0,
             $this->parentHwnd(),
             0

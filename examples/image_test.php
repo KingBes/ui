@@ -303,7 +303,7 @@ $tableModel = new class($tableData, $iconImages) implements TableModel {
 
 $table = new Table($root);
 $root->add($table);
-$table->setColumns(['图标', '名称', '启用', '进度', '颜色', '操作'], 90);
+$table->setColumns(['图标', '名称', '启用', '进度', '颜色', '操作'], [50, 130, 50, 80, 60, 80]);
 // 设置各列类型
 $table->setColumnType(0, Table::TYPE_IMAGE);
 $table->setColumnType(1, Table::TYPE_TEXT);
